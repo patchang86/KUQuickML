@@ -42,6 +42,9 @@ from sklearn.svm import SVC
 from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier
 import seaborn as sns
 import joblib
+from sklearn.base import clone
+
+
 def resource_path(relative_path):
     """ PyInstaller로 패키징할 때 파일 경로를 반환하는 함수 """
     if hasattr(sys, '_MEIPASS'):
@@ -148,6 +151,46 @@ class MyApp(QMainWindow):
         exitAction.triggered.connect(self.exitApp)
         fileMenu.addAction(exitAction)
 
+    def _drop_sample_and_numeric(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Sample 컬럼 제거 + 전부 numeric 강제(에러는 NaN)"""
+        if 'Sample' in df.columns:
+            df = df.drop(columns=['Sample'])
+        df = df.apply(pd.to_numeric, errors='coerce')
+        return df
+
+    def _fit_preprocess_train_test(self, X_train_df: pd.DataFrame, X_test_df: pd.DataFrame, y_train):
+        """
+        학습용 전처리(학습 데이터 기준으로 scaler/reducer fit)
+        반환: X_train_used, X_test_used, fitted_scaler, fitted_reducer, feature_names
+        """
+        # 0) feature 이름 저장 (순서가 가장 중요)
+        feature_names = list(X_train_df.columns)
+
+        # 1) scaler (모델마다 따로 fit된 scaler를 갖게 함)
+        base_scaler = self.scaler
+        scaler = clone(base_scaler) if base_scaler else None
+
+        if scaler:
+            X_train_scaled = scaler.fit_transform(X_train_df)
+            X_test_scaled = scaler.transform(X_test_df)
+        else:
+            X_train_scaled = X_train_df.values
+            X_test_scaled = X_test_df.values
+
+        # 2) reducer (반드시 scaler 이후에 fit/transform)
+        reducer = None
+        selected = self.getSelectedDimReductionMethod()
+        if selected:
+            _, reducer = selected
+            reducer.fit(X_train_scaled, y_train)
+            X_train_used = reducer.transform(X_train_scaled)
+            X_test_used = reducer.transform(X_test_scaled)
+        else:
+            X_train_used = X_train_scaled
+            X_test_used = X_test_scaled
+
+        return X_train_used, X_test_used, scaler, reducer, feature_names
+
     def useCurrentModel(self):
         self.tabs.setCurrentWidget(self.predictionTab)
 
@@ -218,23 +261,14 @@ class MyApp(QMainWindow):
         self.previousModelPredictionTab.setLayout(layout)
 
     def saveModel(self, model_name, filename):
-        model = self.models.get(model_name)
-        reducer = self.model_reducers.get(model_name)
-        # ✅ fit된 scaler를 우선 사용
-        scaler = getattr(self, "fitted_scaler", getattr(self, "scaler", None))
-        feature_names = getattr(self, "feature_names_used", None)
-        label_mapping = getattr(self.csvViewer, "label_mapping", None)
-
-        bundle = {
-            "model": model,
-            "scaler": scaler,
-            "reducer": reducer,
-            "feature_names": feature_names,
-            "label_mapping": label_mapping,
-        }
-
+        bundle = self.models.get(model_name)
+        if not isinstance(bundle, dict) or "model" not in bundle:
+            QMessageBox.warning(self, "Error", "Selected item is not a valid saved model bundle.")
+            return
         try:
             joblib.dump(bundle, filename)
+            scaler = bundle.get("scaler")
+            reducer = bundle.get("reducer")
             QMessageBox.information(
                 self,
                 "Model Saved",
@@ -246,23 +280,22 @@ class MyApp(QMainWindow):
             QMessageBox.warning(self, "Error", f"Failed to save model:\n{e}")
 
     def saveModelDialog(self):
-        model_choice, ok = QInputDialog.getItem(self, "Select Model to Save",
-                                                "Choose a model to save:",
-                                                list(self.models.keys()), 0, False)
+        model_choice, ok = QInputDialog.getItem(
+            self, "Select Model to Save",
+            "Choose a model to save:",
+            list(self.models.keys()), 0, False
+        )
         if ok and model_choice:
-            scaler_choices = list(self.scalers.keys()) + ['None']  # Include 'None' for models trained without scaling
-            scaler_choice, ok = QInputDialog.getItem(self, "Select Scaler",
-                                                     "Choose the scaling method used:",
-                                                     scaler_choices, 0, False)
-            if ok and scaler_choice:
-                options = QFileDialog.Options()
-                suggested_name = f"{model_choice}_{scaler_choice}"
-                filename, _ = QFileDialog.getSaveFileName(self, "Save Model",
-                                                          suggested_name,
-                                                          "Joblib Files (*.joblib);;All Files (*)",
-                                                          options=options)
-                if filename:
-                    self.saveModel(model_choice, filename)
+            options = QFileDialog.Options()
+            suggested_name = f"{model_choice}"
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Save Model",
+                suggested_name,
+                "Joblib Files (*.joblib);;All Files (*)",
+                options=options
+            )
+            if filename:
+                self.saveModel(model_choice, filename)
 
     def applyScaler(self, scaler, scaler_name):
 
@@ -478,9 +511,10 @@ class MyApp(QMainWindow):
         self.tabs.setCurrentWidget(self.SVMTab)
 
     def createSVMModel(self):
-        loading = QProgressDialog("모델 생성 중입니다...\n\n"
-                                  "컴퓨터 사양에 따라 몇 분 정도 소요될 수 있습니다.",
-                                  None, 0, 0, self)
+        loading = QProgressDialog(
+            "모델 생성 중입니다...\n\n컴퓨터 사양에 따라 몇 분 정도 소요될 수 있습니다.",
+            None, 0, 0, self
+        )
         loading.setWindowTitle("SVM 모델 생성 중")
         loading.setWindowModality(Qt.ApplicationModal)
         loading.setMinimumWidth(420)
@@ -489,183 +523,149 @@ class MyApp(QMainWindow):
         loading.show()
         QApplication.processEvents()
 
-
         if not self.checkDataSplit():
+            loading.close()
             return
 
-        X_train = pd.read_csv(resource_path("Temp/X_train.csv"))
-        X_test = pd.read_csv(resource_path("Temp/X_test.csv"))
-        y_train = pd.read_csv(resource_path("Temp/y_train.csv")).values.ravel()
-        y_test = pd.read_csv(resource_path("Temp/y_test.csv")).values.ravel()
+        try:
+            X_train = pd.read_csv(resource_path("Temp/X_train.csv"))
+            X_test = pd.read_csv(resource_path("Temp/X_test.csv"))
+            y_train = pd.read_csv(resource_path("Temp/y_train.csv")).values.ravel()
+            y_test = pd.read_csv(resource_path("Temp/y_test.csv")).values.ravel()
 
+            X_train_numeric = self._drop_sample_and_numeric(X_train)
+            X_test_numeric = self._drop_sample_and_numeric(X_test)
 
+            feature_names = list(X_train_numeric.columns)
 
-        self.model_features = X_train.columns.tolist()
-        self.model_features.remove('Sample')
-
-        X_train_numeric = X_train.drop(columns=['Sample'])
-        X_test_numeric = X_test.drop(columns=['Sample'])
-
-        # 스케일 적용
-        # Apply the scaler
-        if self.scaler is not None:
-            X_train_scaled = self.scaler.transform(X_train_numeric)
-            X_test_scaled = self.scaler.transform(X_test_numeric)
-            self.fitted_scaler = self.scaler
-
-            if hasattr(X_train_numeric, "columns"):
-                X_train_numeric = pd.DataFrame(
-                    X_train_scaled,
-                    columns=X_train_numeric.columns,
-                    index=X_train_numeric.index
-                )
-                X_test_numeric = pd.DataFrame(
-                    X_test_scaled,
-                    columns=X_test_numeric.columns,
-                    index=X_test_numeric.index
-                )
+            # reducer (split 단계에서 이미 scaled/raw가 결정되므로 여기서 추가 스케일링 금지)
+            selected = self.getSelectedDimReductionMethod()
+            reducer = None
+            if selected:
+                _, reducer = selected
+                reducer.fit(X_train_numeric.values, y_train)
+                X_train_used = reducer.transform(X_train_numeric.values)
+                X_test_used = reducer.transform(X_test_numeric.values)
             else:
-                X_train_numeric = X_train_scaled
-                X_test_numeric = X_test_scaled
+                X_train_used = X_train_numeric.values
+                X_test_used = X_test_numeric.values
 
-        # 선택된 차원 축소 방법 적용
-        selected_method = self.getSelectedDimReductionMethod()
-        if selected_method:
-            method_name, reducer = selected_method
-            reducer.fit(X_train_numeric, y_train)  # 학습 데이터에 대해 fit
-            X_train_reduced = reducer.transform(X_train_numeric)
-            X_test_reduced = reducer.transform(X_test_numeric)
+            kernel = self.kernel_type.currentText()
+            c_value = self.c_value.value()
 
+            if self.svm_type.currentText() == "One-vs-One SVM":
+                svc_model = OneVsOneClassifier(SVC(kernel=kernel, C=c_value))
+            else:
+                svc_model = OneVsRestClassifier(SVC(kernel=kernel, C=c_value))
 
-        kernel = self.kernel_type.currentText()
-        c_value = self.c_value.value()
+            svc_model.fit(X_train_used, y_train)
+            y_pred_train = svc_model.predict(X_train_used)
+            y_pred_test = svc_model.predict(X_test_used)
 
-        if self.svm_type.currentText() == "One-vs-One SVM":
-            svc_model = OneVsOneClassifier(SVC(kernel=kernel, C=c_value))
-        else:
-            svc_model = OneVsRestClassifier(SVC(kernel=kernel, C=c_value))
+            cm = confusion_matrix(y_test, y_pred_test)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                precision = np.round(np.diag(cm) / np.sum(cm, axis=0) * 100, 3)
+                precision = np.nan_to_num(precision)
 
-        svc_model.fit(X_train_reduced, y_train)
-        y_pred_train = svc_model.predict(X_train_reduced)
-        y_pred_test = svc_model.predict(X_test_reduced)
-        cm = confusion_matrix(y_test, y_pred_test)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            precision = np.round(np.diag(cm) / np.sum(cm, axis=0) * 100, 3)
-            precision = np.nan_to_num(precision)  # Convert NaNs to zero
+            labels = [f"Class {i}" for i in range(cm.shape[0])]
+            cm_df = pd.DataFrame(
+                cm,
+                index=[f"Actual {label}" for label in labels],
+                columns=[f"Predicted {label}" for label in labels]
+            )
+            cm_df["Prediction Accuracy (%)"] = precision
+            self.showConfusionMatrix(cm_df)
 
-        # Automatically generate index and columns based on cm shape
-        labels = [f"Class {i}" for i in range(cm.shape[0])]
-        cm_df = pd.DataFrame(cm, index=[f"Actual {label}" for label in labels],
-                             columns=[f"Predicted {label}" for label in labels])
-        cm_df['Prediction Accuracy (%)'] = precision
-        self.showConfusionMatrix(cm_df)
-        overall_accuracy = np.sum(np.diag(cm)) / np.sum(cm)
+            overall_accuracy = np.sum(np.diag(cm)) / np.sum(cm)
+            self.plotScatterWithDecisionBoundary(
+                X_train_used, y_train, X_test_used, y_pred_test, svc_model,
+                f"SVM Scatter Plot with Decision Boundary\nTest accuracy = {overall_accuracy:.3f}"
+            )
 
-        self.plotScatterWithDecisionBoundary(X_train_reduced, y_train, X_test_reduced, y_pred_test, svc_model,
-                                             f"SVM Scatter Plot with Decision Boundary\nTest accuracy = {overall_accuracy:.3f}")
-        if kernel == 'linear' and not (
-                self.pcaCheckBox.isChecked() or self.ldaCheckBox.isChecked() or self.ncaCheckBox.isChecked()):
-            self.showImportantCoefficients(X_train_numeric, svc_model)
+            # 중요계수: linear + reducer 없음일 때만
+            if kernel == "linear" and reducer is None:
+                self.showImportantCoefficients(X_train_numeric, svc_model)
 
-        self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test,
-                                     "SVC Observed vs Predicted")
+            self.plotObservedVsPredicted(
+                y_train, y_pred_train, y_test, y_pred_test, "SVC Observed vs Predicted"
+            )
 
-        self.models['SV Classification'] = svc_model
-        if reducer:
-            self.model_reducers['SV Classification'] = reducer
+            # ✅ bundle 저장 (예측 탭에서 그대로 사용)
+            self.models["SV Classification"] = {
+                "model": svc_model,
+                "scaler": self._get_bundle_scaler(),
+                "reducer": reducer,
+                "feature_names": feature_names,
+                "label_mapping": self._get_label_mapping()
+            }
+            if reducer:
+                self.model_reducers["SV Classification"] = reducer
 
-        QTimer.singleShot(300, loading.close)
+        except Exception as e:
+            QMessageBox.warning(self, "SVM Error", f"Failed to create SVM model:\n{e}")
+        finally:
+            QTimer.singleShot(200, loading.close)
 
     def createSVMRegressionModel(self):
         if not self.checkDataSplit():
             return
 
-        # 데이터 로드
-        X_train = pd.read_csv(resource_path("Temp/X_train.csv"))
-        X_test = pd.read_csv(resource_path("Temp/X_test.csv"))
-        y_train = pd.read_csv(resource_path("Temp/y_train.csv")).values.ravel()
-        y_test = pd.read_csv(resource_path("Temp/y_test.csv")).values.ravel()
+        try:
+            X_train = pd.read_csv(resource_path("Temp/X_train.csv"))
+            X_test = pd.read_csv(resource_path("Temp/X_test.csv"))
+            y_train = pd.read_csv(resource_path("Temp/y_train.csv")).values.ravel()
+            y_test = pd.read_csv(resource_path("Temp/y_test.csv")).values.ravel()
 
+            X_train_numeric = self._drop_sample_and_numeric(X_train).fillna(0)
+            X_test_numeric = self._drop_sample_and_numeric(X_test).fillna(0)
 
-        if hasattr(self.csvViewer, "label_column"):
-            label_col = self.csvViewer.label_column
-            if label_col in X_train.columns:
-                X_train = X_train.drop(columns=[label_col], errors="ignore")
-                X_test = X_test.drop(columns=[label_col], errors="ignore")
+            feature_names = list(X_train_numeric.columns)
 
-        # 문자열형 컬럼 제거 (예: name)
-        X_train_numeric = X_train.select_dtypes(include=["number"])
-        X_test_numeric = X_test.select_dtypes(include=["number"])
-        self.model_features = X_train.columns.tolist()
-        self.model_features.remove('Sample')
-
-        X_train_numeric = X_train.drop(columns=['Sample'])
-        X_test_numeric = X_test.drop(columns=['Sample'])
-
-        # 스케일 적용
-        # Apply the scaler
-        if self.scaler is not None:
-            X_train_scaled = self.scaler.transform(X_train_numeric)
-            X_test_scaled = self.scaler.transform(X_test_numeric)
-            self.fitted_scaler = self.scaler
-
-            if hasattr(X_train_numeric, "columns"):
-                X_train_numeric = pd.DataFrame(
-                    X_train_scaled,
-                    columns=X_train_numeric.columns,
-                    index=X_train_numeric.index
-                )
-                X_test_numeric = pd.DataFrame(
-                    X_test_scaled,
-                    columns=X_test_numeric.columns,
-                    index=X_test_numeric.index
-                )
+            # 회귀에서는 PCA만 안전( LDA/NCA는 분류용 성격이라 에러/왜곡 가능 )
+            reducer = None
+            if self.pcaCheckBox.isChecked():
+                reducer = PCA(n_components=2)
+                reducer.fit(X_train_numeric.values)
+                X_train_used = reducer.transform(X_train_numeric.values)
+                X_test_used = reducer.transform(X_test_numeric.values)
             else:
-                X_train_numeric = X_train_scaled
-                X_test_numeric = X_test_scaled
-        selected_method = self.getSelectedDimReductionMethod()
-        if selected_method:
-            method_name, reducer = selected_method
-            reducer.fit(X_train_numeric, y_train)
-            X_train_reduced = reducer.transform(X_train_numeric)
-            X_test_reduced = reducer.transform(X_test_numeric)
+                # LDA/NCA/None 선택 시: 그냥 차원축소 없이 진행
+                X_train_used = X_train_numeric.values
+                X_test_used = X_test_numeric.values
 
-        kernel = self.kernel_type.currentText()
-        c_value = self.c_value.value()
+            kernel = self.kernel_type.currentText()
+            c_value = self.c_value.value()
 
-        # SVR 모델 생성 및 학습
-        svr_model = SVR(kernel=kernel, C=c_value)
-        svr_model.fit(X_train_reduced, y_train)  # 축소된 데이터 사용
+            svr_model = SVR(kernel=kernel, C=c_value)
+            svr_model.fit(X_train_used, y_train)
 
-        # 예측 수행
-        y_pred_train = svr_model.predict(X_train_reduced)
-        y_pred_test = svr_model.predict(X_test_reduced)
+            y_pred_train = svr_model.predict(X_train_used)
+            y_pred_test = svr_model.predict(X_test_used)
 
-        # 성능 지표 계산
-        r2_test = r2_score(y_test, y_pred_test)
-        mse_test = mean_squared_error(y_test, y_pred_test)
-        rmse_test = np.sqrt(mse_test)
+            r2_test = r2_score(y_test, y_pred_test)
+            mse_test = mean_squared_error(y_test, y_pred_test)
+            rmse_test = np.sqrt(mse_test)
 
-        # 결과 시각화
-      #  self.plotScatterWithDecisionBoundary(
-       #     X_train_reduced, y_train, X_test_reduced, y_pred_test, svr_model,
-       #     "Training and Test Data with Decision Boundary"
-      #  )
+            if kernel == "linear" and reducer is None and hasattr(svr_model, "coef_"):
+                self.showImportantCoefficients(X_train_numeric, svr_model)
 
-        # 선형 커널이고 차원 축소가 없을 때만 중요 피처 표시
-        if kernel == 'linear' and not (
-                self.pcaCheckBox.isChecked() or self.ldaCheckBox.isChecked() or self.ncaCheckBox.isChecked()):
-            self.showImportantCoefficients(X_train_numeric, svr_model)
+            self.plotObservedVsPredicted(
+                y_train, y_pred_train, y_test, y_pred_test,
+                f"SVR Observed vs Predicted\nTest R2={r2_test:.3f}, RMSE={rmse_test:.3f}"
+            )
 
-        # 예측 값과 실제 값 비교
-        self.plotObservedVsPredicted(
-            y_train, y_pred_train, y_test, y_pred_test, "SVR Observed vs Predicted"
-        )
+            self.models["SV Regression"] = {
+                "model": svr_model,
+                "scaler": self._get_bundle_scaler(),
+                "reducer": reducer,
+                "feature_names": feature_names,
+                "label_mapping": None
+            }
+            if reducer:
+                self.model_reducers["SV Regression"] = reducer
 
-        # 모델 저장
-        self.models['SV Regression'] = svr_model
-        if reducer:
-            self.model_reducers['SV Regression'] = reducer
+        except Exception as e:
+            QMessageBox.warning(self, "SVR Error", f"Failed to create SVR model:\n{e}")
 
     def plotScatterWithDecisionBoundary(self, X_train_reduced, y_train, X_test_reduced, y_pred_test, model, title):
         plt.figure(figsize=(10, 8))
@@ -1009,62 +1009,32 @@ class MyApp(QMainWindow):
         self.tabs.addTab(self.MLPTab, "MLP")
         self.tabs.setCurrentWidget(self.MLPTab)
 
-
-
     def createMLPClassificationModel(self):
         if not self.checkDataSplit():
             return
+
         X_train = pd.read_csv(resource_path("Temp/X_train.csv"))
         X_test = pd.read_csv(resource_path("Temp/X_test.csv"))
         y_train = pd.read_csv(resource_path("Temp/y_train.csv")).values.ravel()
         y_test = pd.read_csv(resource_path("Temp/y_test.csv")).values.ravel()
 
-        self.model_features = X_train.columns.tolist()
-        self.model_features.remove('Sample')
+        X_train_numeric = self._drop_sample_and_numeric(X_train).fillna(0)
+        X_test_numeric = self._drop_sample_and_numeric(X_test).fillna(0)
 
-        X_train_numeric = X_train.drop(columns=['Sample'])
-        X_test_numeric = X_test.drop(columns=['Sample'])
+        feature_names = list(X_train_numeric.columns)
 
-        # Apply the scaler
-        if self.scaler is not None:
-            X_train_scaled = self.scaler.fit_transform(X_train_numeric)
-            X_test_scaled = self.scaler.transform(X_test_numeric)
-            self.fitted_scaler = self.scaler
+        # split 단계에서 raw/scaled 결정났으니 여기서 추가 스케일링 금지
+        X_train_used = X_train_numeric.values
+        X_test_used = X_test_numeric.values
 
-            if hasattr(X_train_numeric, "columns"):
-                X_train_numeric = pd.DataFrame(
-                    X_train_scaled,
-                    columns=X_train_numeric.columns,
-                    index=X_train_numeric.index
-                )
-                X_test_numeric = pd.DataFrame(
-                    X_test_scaled,
-                    columns=X_test_numeric.columns,
-                    index=X_test_numeric.index
-                )
-            else:
-                X_train_numeric = X_train_scaled
-                X_test_numeric = X_test_scaled
+        hidden_layer_input_text = self.hidden_layer_input.text().strip()
+        hidden_layers = (50, 50) if not hidden_layer_input_text else tuple(map(int, hidden_layer_input_text.split(",")))
 
-        # Hidden layer size 설정
-        hidden_layer_input_text = self.hidden_layer_input.text()
-        if not hidden_layer_input_text:
-            hidden_layers = (50, 50)
-        else:
-            hidden_layers = tuple(map(int, hidden_layer_input_text.split(',')))
+        alpha_input_text = self.alpha_input.text().strip()
+        alpha = 0.0001 if not alpha_input_text else float(alpha_input_text)
 
-        # Alpha 값 설정
-        alpha_input_text = self.alpha_input.text()
-        if not alpha_input_text:
-            alpha = 0.0001
-        else:
-            alpha = float(alpha_input_text)
-        # Learning rate 설정
-        lr_input_text = self.learning_rate_input.text()
-        if not lr_input_text:
-            learning_rate = 0.001
-        else:
-            learning_rate = float(lr_input_text)
+        lr_input_text = self.learning_rate_input.text().strip()
+        learning_rate = 0.001 if not lr_input_text else float(lr_input_text)
 
         mlp = MLPClassifier(
             hidden_layer_sizes=hidden_layers,
@@ -1078,93 +1048,74 @@ class MyApp(QMainWindow):
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning, module="sklearn")
-            mlp.fit(X_train_numeric, y_train)
+            mlp.fit(X_train_used, y_train)
 
         if mlp.n_iter_ == mlp.max_iter:
             QMessageBox.warning(self, "Iteration Warning", "Maximum iterations reached. Consider increasing max_iter.")
 
-        y_pred_train = mlp.predict(X_train_numeric)
-        y_pred_test = mlp.predict(X_test_numeric)
+        y_pred_train = mlp.predict(X_train_used)
+        y_pred_test = mlp.predict(X_test_used)
+
+        cm = confusion_matrix(y_test, y_pred_test)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            precision = np.round(np.diag(cm) / np.sum(cm, axis=0) * 100, 3)
+            precision = np.nan_to_num(precision)
+
+        labels = [f"Class {i}" for i in range(cm.shape[0])]
+        cm_df = pd.DataFrame(
+            cm,
+            index=[f"Actual {label}" for label in labels],
+            columns=[f"Predicted {label}" for label in labels]
+        )
+        cm_df["Prediction Accuracy (%)"] = precision
+        self.showConfusionMatrix(cm_df)
 
         r2_train = r2_score(y_train, y_pred_train)
         r2_test = r2_score(y_test, y_pred_test)
         mse_test = mean_squared_error(y_test, y_pred_test)
         rmse_test = np.sqrt(mse_test)
 
-        self.latest_model = (mlp, None)  # Save the latest model
-        cm = confusion_matrix(y_test, y_pred_test)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            precision = np.round(np.diag(cm) / np.sum(cm, axis=0) * 100, 3)
-            precision = np.nan_to_num(precision)  # Convert NaNs to zero
-
-        # Automatically generate index and columns based on cm shape
-        labels = [f"Class {i}" for i in range(cm.shape[0])]
-        cm_df = pd.DataFrame(cm, index=[f"Actual {label}" for label in labels],
-                             columns=[f"Predicted {label}" for label in labels])
-        cm_df['Prediction Accuracy (%)'] = precision
-        self.showConfusionMatrix(cm_df)
-
         self.showMLPResults(y_train, y_pred_train, y_test, y_pred_test, r2_train, r2_test, mse_test, rmse_test)
-        perm_importance = permutation_importance(mlp, X_test_numeric, y_test, n_repeats=10, random_state=42)
-        sorted_idx = np.argsort(perm_importance.importances_mean)[::-1]
-        feature_importances = [(X_train_numeric.columns[idx], perm_importance.importances_mean[idx]) for idx in sorted_idx]
 
+        perm_importance = permutation_importance(mlp, X_test_used, y_test, n_repeats=10, random_state=42)
+        sorted_idx = np.argsort(perm_importance.importances_mean)[::-1]
+        feature_importances = [(feature_names[idx], perm_importance.importances_mean[idx]) for idx in sorted_idx]
         self.showMLPFeatureImportances(feature_importances)
-        self.models['MLP Classification'] = mlp
+
+        # ✅ bundle 저장
+        self.models["MLP Classification"] = {
+            "model": mlp,
+            "scaler": self._get_bundle_scaler(),
+            "reducer": None,
+            "feature_names": feature_names,
+            "label_mapping": self._get_label_mapping()
+        }
+
     def createMLPRegressionModel(self):
         if not self.checkDataSplit():
             return
+
         X_train = pd.read_csv(resource_path("Temp/X_train.csv"))
         X_test = pd.read_csv(resource_path("Temp/X_test.csv"))
         y_train = pd.read_csv(resource_path("Temp/y_train.csv")).values.ravel()
         y_test = pd.read_csv(resource_path("Temp/y_test.csv")).values.ravel()
-        self.model_features = X_train.columns.tolist()
-        self.model_features.remove('Sample')
 
-        X_train_numeric = X_train.drop(columns=['Sample'])
-        X_test_numeric = X_test.drop(columns=['Sample'])
+        X_train_numeric = self._drop_sample_and_numeric(X_train).fillna(0)
+        X_test_numeric = self._drop_sample_and_numeric(X_test).fillna(0)
 
-        # Apply the scaler
-        if self.scaler is not None:
+        feature_names = list(X_train_numeric.columns)
 
-            X_train_scaled = self.scaler.fit_transform(X_train_numeric)
-            X_test_scaled = self.scaler.transform(X_test_numeric)
-            self.fitted_scaler = self.scaler
+        X_train_used = X_train_numeric.values
+        X_test_used = X_test_numeric.values
 
-            if hasattr(X_train_numeric, "columns"):
-                X_train_numeric = pd.DataFrame(
-                    X_train_scaled,
-                    columns=X_train_numeric.columns,
-                    index=X_train_numeric.index
-                )
-                X_test_numeric = pd.DataFrame(
-                    X_test_scaled,
-                    columns=X_test_numeric.columns,
-                    index=X_test_numeric.index
-                )
-            else:
-                X_train_numeric = X_train_scaled
-                X_test_numeric = X_test_scaled
+        hidden_layer_input_text = self.hidden_layer_input.text().strip()
+        hidden_layers = (50, 50) if not hidden_layer_input_text else tuple(map(int, hidden_layer_input_text.split(",")))
 
-        # Hidden layer size 설정
-        hidden_layer_input_text = self.hidden_layer_input.text()
-        if not hidden_layer_input_text:
-            hidden_layers = (50, 50)
-        else:
-            hidden_layers = tuple(map(int, hidden_layer_input_text.split(',')))
+        alpha_input_text = self.alpha_input.text().strip()
+        alpha = 0.0001 if not alpha_input_text else float(alpha_input_text)
 
-        # Alpha 값 설정
-        alpha_input_text = self.alpha_input.text()
-        if not alpha_input_text:
-            alpha = 0.0001
-        else:
-            alpha = float(alpha_input_text)
-        # Learning rate 설정
-        lr_input_text = self.learning_rate_input.text()
-        if not lr_input_text:
-            learning_rate = 0.001
-        else:
-            learning_rate = float(lr_input_text)
+        lr_input_text = self.learning_rate_input.text().strip()
+        learning_rate = 0.001 if not lr_input_text else float(lr_input_text)
 
         mlp = MLPRegressor(
             hidden_layer_sizes=hidden_layers,
@@ -1178,37 +1129,35 @@ class MyApp(QMainWindow):
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning, module="sklearn")
-            mlp.fit(X_train_numeric, y_train)
+            mlp.fit(X_train_used, y_train)
 
         if mlp.n_iter_ == mlp.max_iter:
             QMessageBox.warning(self, "Iteration Warning", "Maximum iterations reached. Consider increasing max_iter.")
 
-        y_pred_train = mlp.predict(X_train_numeric)
-        y_pred_test = mlp.predict(X_test_numeric)
+        y_pred_train = mlp.predict(X_train_used)
+        y_pred_test = mlp.predict(X_test_used)
 
         r2_train = r2_score(y_train, y_pred_train)
         r2_test = r2_score(y_test, y_pred_test)
         mse_test = mean_squared_error(y_test, y_pred_test)
         rmse_test = np.sqrt(mse_test)
 
-        self.latest_model = (mlp, None)  # Save the latest model
-
         self.showMLPResults(y_train, y_pred_train, y_test, y_pred_test, r2_train, r2_test, mse_test, rmse_test)
-        perm_importance = permutation_importance(mlp, X_test_numeric, y_test, n_repeats=10, random_state=42)
+
+        perm_importance = permutation_importance(mlp, X_test_used, y_test, n_repeats=10, random_state=42)
         sorted_idx = np.argsort(perm_importance.importances_mean)[::-1]
-        # Feature 이름 안전 처리
-        if hasattr(X_train_numeric, "columns"):
-            feature_names = X_train_numeric.columns
-        else:
-            feature_names = [f"Feature {i}" for i in range(X_train_numeric.shape[1])]
-
-        feature_importances = [
-            (feature_names[idx], perm_importance.importances_mean[idx])
-            for idx in sorted_idx
-        ]
-
+        feature_importances = [(feature_names[idx], perm_importance.importances_mean[idx]) for idx in sorted_idx]
         self.showMLPFeatureImportances(feature_importances)
-        self.models['MLP Regression'] = mlp
+
+        # ✅ bundle 저장
+        self.models["MLP Regression"] = {
+            "model": mlp,
+            "scaler": self._get_bundle_scaler(),
+            "reducer": None,
+            "feature_names": feature_names,
+            "label_mapping": None
+        }
+
     def showMLPFeatureImportances(self, feature_importances):
         dialog = QDialog(self)
         dialog.setWindowTitle("Feature Importances")
@@ -1354,37 +1303,16 @@ class MyApp(QMainWindow):
     def createRFClassificationModel(self):
         if not self.checkDataSplit():
             return
+
         X_train = pd.read_csv(resource_path("Temp/X_train.csv"))
         X_test = pd.read_csv(resource_path("Temp/X_test.csv"))
         y_train = pd.read_csv(resource_path("Temp/y_train.csv")).values.ravel()
         y_test = pd.read_csv(resource_path("Temp/y_test.csv")).values.ravel()
 
-        self.model_features = X_train.columns.tolist()
-        self.model_features.remove('Sample')
+        X_train_numeric = self._drop_sample_and_numeric(X_train).fillna(0)
+        X_test_numeric = self._drop_sample_and_numeric(X_test).fillna(0)
 
-        X_train_numeric = X_train.drop(columns=['Sample'])
-        X_test_numeric = X_test.drop(columns=['Sample'])
-
-        # Apply the scaler
-        if self.scaler is not None:
-            X_train_scaled = self.scaler.fit_transform(X_train_numeric)
-            X_test_scaled = self.scaler.transform(X_test_numeric)
-            self.fitted_scaler = self.scaler
-
-            if hasattr(X_train_numeric, "columns"):
-                X_train_numeric = pd.DataFrame(
-                    X_train_scaled,
-                    columns=X_train_numeric.columns,
-                    index=X_train_numeric.index
-                )
-                X_test_numeric = pd.DataFrame(
-                    X_test_scaled,
-                    columns=X_test_numeric.columns,
-                    index=X_test_numeric.index
-                )
-            else:
-                X_train_numeric = X_train_scaled
-                X_test_numeric = X_test_scaled
+        feature_names = list(X_train_numeric.columns)
 
         rf_clf = RandomForestClassifier(
             n_estimators=self.param_inputs["N Estimators:"].value(),
@@ -1395,28 +1323,25 @@ class MyApp(QMainWindow):
             n_jobs=-1
         )
 
-        rf_clf.fit(X_train_numeric, y_train)
-        y_pred_train = rf_clf.predict(X_train_numeric)
-        y_pred_test = rf_clf.predict(X_test_numeric)
+        rf_clf.fit(X_train_numeric.values, y_train)
+        y_pred_train = rf_clf.predict(X_train_numeric.values)
+        y_pred_test = rf_clf.predict(X_test_numeric.values)
         accuracy = accuracy_score(y_test, y_pred_test)
 
-        # Confusion matrix
         unique_labels = np.unique(np.concatenate((y_test, y_pred_test)))
-        true = [f'true_{label}' for label in unique_labels]
-        pred = [f'pred_{label}' for label in unique_labels]
+        true = [f"true_{label}" for label in unique_labels]
+        pred = [f"pred_{label}" for label in unique_labels]
         cm = confusion_matrix(y_test, y_pred_test)
         cm_df = pd.DataFrame(cm, index=true, columns=pred)
+
         with np.errstate(divide='ignore', invalid='ignore'):
             precision = np.round(np.diag(cm) / np.sum(cm, axis=0) * 100, 3)
-            precision = np.nan_to_num(precision)  # Convert NaNs to zero
+            precision = np.nan_to_num(precision)
+        cm_df["Prediction Accuracy (%)"] = precision
 
-        cm_df['Prediction Accuracy (%)'] = precision
-
-        # R2 scores
         r2_train = r2_score(y_train, y_pred_train)
         r2_test = r2_score(y_test, y_pred_test)
 
-        # Variable importances
         characteristics = X_train_numeric.columns
         importances = rf_clf.feature_importances_
         variable_importances = sorted(zip(characteristics, importances), key=lambda x: x[1], reverse=True)
@@ -1424,41 +1349,29 @@ class MyApp(QMainWindow):
         self.showRFClfResults(accuracy, cm_df, r2_train, r2_test, variable_importances)
         self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test,
                                      "RF Classification: Observed vs Predicted")
-        self.models['RF Classification'] = rf_clf
+
+        # ✅ bundle 저장
+        self.models["RF Classification"] = {
+            "model": rf_clf,
+            "scaler": self._get_bundle_scaler(),
+            "reducer": None,
+            "feature_names": feature_names,
+            "label_mapping": self._get_label_mapping()
+        }
+
     def createRFRegressionModel(self):
         if not self.checkDataSplit():
             return
+
         X_train = pd.read_csv(resource_path("Temp/X_train.csv"))
         X_test = pd.read_csv(resource_path("Temp/X_test.csv"))
         y_train = pd.read_csv(resource_path("Temp/y_train.csv")).values.ravel()
         y_test = pd.read_csv(resource_path("Temp/y_test.csv")).values.ravel()
 
-        self.model_features = X_train.columns.tolist()
-        self.model_features.remove('Sample')
+        X_train_numeric = self._drop_sample_and_numeric(X_train).fillna(0)
+        X_test_numeric = self._drop_sample_and_numeric(X_test).fillna(0)
 
-        X_train_numeric = X_train.drop(columns=['Sample'])
-        X_test_numeric = X_test.drop(columns=['Sample'])
-
-        # Apply the scaler
-        if self.scaler is not None:
-            X_train_scaled = self.scaler.fit_transform(X_train_numeric)
-            X_test_scaled = self.scaler.transform(X_test_numeric)
-            self.fitted_scaler = self.scaler
-
-            if hasattr(X_train_numeric, "columns"):
-                X_train_numeric = pd.DataFrame(
-                    X_train_scaled,
-                    columns=X_train_numeric.columns,
-                    index=X_train_numeric.index
-                )
-                X_test_numeric = pd.DataFrame(
-                    X_test_scaled,
-                    columns=X_test_numeric.columns,
-                    index=X_test_numeric.index
-                )
-            else:
-                X_train_numeric = X_train_scaled
-                X_test_numeric = X_test_scaled
+        feature_names = list(X_train_numeric.columns)
 
         rf_regr = RandomForestRegressor(
             n_estimators=self.param_inputs["N Estimators:"].value(),
@@ -1469,21 +1382,31 @@ class MyApp(QMainWindow):
             n_jobs=-1
         )
 
-        rf_regr.fit(X_train_numeric, y_train)
-        y_pred_train = rf_regr.predict(X_train_numeric)
-        y_pred_test = rf_regr.predict(X_test_numeric)
+        rf_regr.fit(X_train_numeric.values, y_train)
+        y_pred_train = rf_regr.predict(X_train_numeric.values)
+        y_pred_test = rf_regr.predict(X_test_numeric.values)
+
         r2_train = r2_score(y_train, y_pred_train)
         r2_test = r2_score(y_test, y_pred_test)
         mse_test = mean_squared_error(y_test, y_pred_test)
         rmse_test = np.sqrt(mse_test)
-        # Variable importances
+
         characteristics = X_train_numeric.columns
         importances = rf_regr.feature_importances_
         variable_importances = sorted(zip(characteristics, importances), key=lambda x: x[1], reverse=True)
 
         self.showRFRegResults(r2_train, r2_test, mse_test, rmse_test, variable_importances)
-        self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test, "RF Regressionression: Observed vs Predicted")
-        self.models['RF Regression'] = rf_regr
+        self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test, "RF Regression: Observed vs Predicted")
+
+        # ✅ bundle 저장
+        self.models["RF Regression"] = {
+            "model": rf_regr,
+            "scaler": self._get_bundle_scaler(),
+            "reducer": None,
+            "feature_names": feature_names,
+            "label_mapping": None
+        }
+
     def showRFRegResults(self, r2_train, r2_test, mse_test, rmse_test, variable_importances):
         dialog = QDialog(self)
         dialog.setWindowTitle("Random Forest Regression Results")
@@ -1620,8 +1543,18 @@ class MyApp(QMainWindow):
         try:
             # ① unknown CSV 로드
             self.unknown_data = pd.read_csv(filename)
-            numeric_columns = self.unknown_data.select_dtypes(include=[np.number]).columns
-            data_to_scale = self.unknown_data[numeric_columns].copy()
+            # Sample 컬럼이 있으면 분리
+            unknown_df = self.unknown_data.copy()
+            if 'Sample' in unknown_df.columns:
+                sample_series = unknown_df['Sample']
+                unknown_df = unknown_df.drop(columns=['Sample'])
+            else:
+                sample_series = pd.Series([f"Sample {i + 1}" for i in range(len(unknown_df))])
+
+            # numeric 강제
+            unknown_df = unknown_df.apply(pd.to_numeric, errors='coerce').fillna(0)
+
+            data_to_scale = unknown_df
 
             # ② 로드된 모델 확인
             if not hasattr(self, "loaded_bundle"):
@@ -1642,7 +1575,8 @@ class MyApp(QMainWindow):
             # ③ feature 순서 맞추기
             if feature_names is not None:
                 data_to_scale = data_to_scale.reindex(columns=feature_names)
-                print("[Auto-align] Columns reordered to match training features.")
+                if data_to_scale.isnull().any().any():
+                    data_to_scale = data_to_scale.fillna(0)
             else:
                 print("[Warning] Model has no saved feature names — predictions may be unreliable!")
 
@@ -1664,6 +1598,67 @@ class MyApp(QMainWindow):
             else:
                 data_used = data_scaled
 
+            print("unknown raw mean/std:", data_to_scale.values.mean(), data_to_scale.values.std())
+            if scaler:
+                tmp = scaler.transform(data_to_scale)
+                print("after scaler mean/std:", tmp.mean(), tmp.std())
+            incoming = data_used.values if hasattr(data_used, "values") else np.asarray(data_used)
+
+
+            print("incoming shape:", incoming.shape)
+            print("incoming nan:", np.isnan(incoming).any(), "inf:", np.isinf(incoming).any())
+            print("incoming mean/std:", float(np.mean(incoming)), float(np.std(incoming)))
+            incoming = data_used.values if hasattr(data_used, "values") else np.asarray(data_used)
+
+            print("model n_features_in_:", getattr(model, "n_features_in_", None))
+            print("incoming shape:", incoming.shape)
+            print("saved feature_names len:", len(feature_names) if feature_names is not None else None)
+            print("scaler:", type(scaler).__name__ if scaler else None, "reducer:",
+                  type(reducer).__name__ if reducer else None)
+
+            # 1) unknown 최종 입력(스케일/리듀서 적용 후)
+            incoming = data_used.values if hasattr(data_used, "values") else np.asarray(data_used)
+
+            # 2) train도 "저장된 scaler/reducer"로 똑같이 전처리해서 비교
+            X_train_df = pd.read_csv(resource_path("Temp/X_train.csv"))
+
+            # Sample 제거 + numeric 강제 + NaN 0
+            X_train_df = X_train_df.drop(columns=["Sample"], errors="ignore")
+            X_train_df = X_train_df.apply(pd.to_numeric, errors="coerce").fillna(0)
+
+            # feature 순서 맞추기(없으면 0채움됨)
+            if feature_names is not None:
+                X_train_df = X_train_df.reindex(columns=feature_names).fillna(0)
+
+            # scaler 적용
+            if scaler:
+                X_train_proc = scaler.transform(X_train_df)
+            else:
+                X_train_proc = X_train_df.values
+
+            # reducer 적용
+            if reducer:
+                X_train_proc = reducer.transform(X_train_proc)
+
+            X_train_proc = np.asarray(X_train_proc)
+
+            print("incoming shape:", incoming.shape)
+            print("X_train_proc shape:", X_train_proc.shape)
+
+            # 3) 거리 계산: unknown 각 행이 train 중 어떤 행과 가장 가까운지
+            d = np.linalg.norm(X_train_proc[None, :, :] - incoming[:, None, :], axis=2)
+            min_d = d.min(axis=1)
+            argmin = d.argmin(axis=1)
+
+            print("min distance per unknown row:", min_d)
+            print("closest train row index:", argmin)
+
+            # 4) 판정: 거의 0이면 동일로 간주
+            tol = 1e-9
+            same_mask = min_d <= tol
+            print("same_mask (min_d<=1e-9):", same_mask)
+            print("how many exactly same?:", same_mask.sum(), "/", len(same_mask))
+
             # ⑥ 예측
             predictions = model.predict(data_used)
 
@@ -1679,12 +1674,7 @@ class MyApp(QMainWindow):
             self.prediction_table.setRowCount(len(predictions))
 
             for i, pred in enumerate(predictions):
-                sample_name = (
-                    self.unknown_data.iloc[i, 0]
-                    if "Sample" in self.unknown_data.columns
-                    else f"Sample {i + 1}"
-                )
-                self.prediction_table.setItem(i, 0, QTableWidgetItem(str(sample_name)))
+                self.prediction_table.setItem(i, 0, QTableWidgetItem(str(sample_series.iloc[i])))
                 self.prediction_table.setItem(i, 1, QTableWidgetItem(str(pred)))
 
             self.prediction_table.resizeColumnsToContents()
@@ -2182,8 +2172,19 @@ class MyApp(QMainWindow):
 
         self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, accuracy)
         self.showConfusionMatrix(cm_df)
-        self.models['KNN Classification'] = knn
-        self.model_reducers['KNN Classification'] = reducer
+        # ✅ bundle 저장 (Save Model / Load Previous Model / Unknown prediction 통일)
+        feature_names = list(X_train_numeric.columns)
+
+        self.models["KNN Classification"] = {
+            "model": knn,
+            "scaler": self._get_bundle_scaler(),  # split이 scaled였을 때만 scaler 저장
+            "reducer": reducer,  # PCA/LDA/NCA
+            "feature_names": feature_names,  # feature 순서 고정
+            "label_mapping": self._get_label_mapping()  # 문자열 라벨 복원용(있을 때만)
+        }
+
+        if reducer:
+            self.model_reducers["KNN Classification"] = reducer
 
     def createRegressionModel(self):
         if not self.checkDataSplit():
@@ -2213,9 +2214,20 @@ class MyApp(QMainWindow):
         accuracy = knn.score(X_test_embedded, y_test)
 
         self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, accuracy)
-        self.models['KNN Regression'] = knn
+        # ✅ bundle 저장 (Save Model / Load Previous Model / Unknown prediction 통일)
+        feature_names = list(X_train_numeric.columns)
+
+        self.models["KNN Regression"] = {
+            "model": knn,
+            "scaler": self._get_bundle_scaler(),  # split이 scaled였을 때만 scaler 저장
+            "reducer": reducer,  # PCA/LDA/NCA (None이면 그대로)
+            "feature_names": feature_names,
+            "label_mapping": None  # 회귀는 라벨 매핑 불필요
+        }
+
         if reducer:
-            self.model_reducers['KNN Regression'] = reducer
+            self.model_reducers["KNN Regression"] = reducer
+
     def plotResults(self, name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, accuracy):
 
         plt.figure() #KNN 2차원 result scatter plot
@@ -2435,6 +2447,12 @@ class MyApp(QMainWindow):
 
         self.dataSplitTab.setLayout(layout)
 
+    def _get_bundle_scaler(self):
+        # split에서 scaled 데이터를 썼을 때만 scaler를 함께 저장
+        return self.scaler if getattr(self, "last_split_used_scaled", False) else None
+
+    def _get_label_mapping(self):
+        return getattr(self.csvViewer, "label_mapping", None)
 
     def splitData(self):
         if self.rawDataRadioButton.isChecked():
@@ -2444,6 +2462,7 @@ class MyApp(QMainWindow):
         else:
             QMessageBox.warning(self, "Selection Error", "Please select either raw data or scaled data.")
             return
+        self.last_split_used_scaled = self.scaledDataRadioButton.isChecked()
 
         if not os.path.exists(X_file):
             QMessageBox.warning(self, "File Error", f"{X_file} does not exist.")
@@ -2543,17 +2562,42 @@ class MyApp(QMainWindow):
                 formatted_value = str(y_value)
             self.testSetWidget.setItem(i, X_test.shape[1], QTableWidgetItem(formatted_value))
 
-    def loadCsv(self):
+    def loadCsv(self, checked=False):
+        # QAction.triggered가 bool(checked)을 넘기므로 checked 인자를 받아야 함
         options = QFileDialog.Options()
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Open CSV File", "", "CSV Files (*.csv);;All Files (*)", options=options)
-        if filename:
-            try:
-                self.csvViewer.loadCsv(filename)
+            self, "Open CSV File", "",
+            "CSV Files (*.csv);;All Files (*)", options=options
+        )
+        if not filename:
+            return
+
+        try:
+            # CsvViewer의 로딩 루틴 사용 (ColumnRoleDialog 포함)
+            self.csvViewer.loadCsv(filename)
+
+            # UI: 가이드 숨기고 뷰어 보여주기 (원하면 제거 가능)
+            if hasattr(self, "guideWidget"):
                 self.guideWidget.hide()
-                self.csvViewer.show()
-            except Exception as e:
-                QMessageBox.warning(self, "Load Error", f"Failed to load CSV: {e}")
+            self.csvViewer.show()
+
+            # Temp 폴더에 splitData가 필요로 하는 파일 저장
+            output_dir = resource_path('Temp')
+            os.makedirs(output_dir, exist_ok=True)
+
+            # original_X.csv : Sample + Feature들
+            if getattr(self.csvViewer, "original_data", None) is not None:
+                self.csvViewer.original_data.to_csv(os.path.join(output_dir, "original_X.csv"), index=False)
+
+            # scaled_y.csv : Label만 (이름은 splitData에서 scaled_y.csv로 읽고 있어서 유지)
+            if getattr(self.csvViewer, "y", None) is not None:
+                pd.DataFrame(self.csvViewer.y, columns=["Label"]).to_csv(os.path.join(output_dir, "scaled_y.csv"),
+                                                                         index=False)
+
+            QMessageBox.information(self, "Load Complete", f"Loaded CSV:\n{os.path.basename(filename)}")
+
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Failed to load CSV: {e}")
 
     def exitApp(self):
         reply = QMessageBox.question(self, 'Message', '정말 닫으시겠습니까?', QMessageBox.Yes | QMessageBox.Cancel,
@@ -2617,41 +2661,49 @@ class CsvViewer(QWidget):
         headers = data.columns.tolist()
 
         dialog = ColumnRoleDialog(headers)
-        if dialog.exec_():
-            selections = dialog.getSelections()
-            label_column_name = next(key for key, value in selections.items() if value == 'Label')
-            sample_column_name = next((key for key, value in selections.items() if value == 'Sample'), None)
-            feature_columns = [key for key, value in selections.items() if value == 'Feature']
+        if not dialog.exec_():
+            return
 
-            if sample_column_name is None:
-                data['Sample'] = range(1, len(data) + 1)
-                sample_column_name = 'Sample'
+        selections = dialog.getSelections()
+        label_column_name = next(key for key, value in selections.items() if value == 'Label')
+        sample_column_name = next((key for key, value in selections.items() if value == 'Sample'), None)
+        feature_columns = [key for key, value in selections.items() if value == 'Feature']
 
-            if pd.api.types.is_numeric_dtype(data[label_column_name]):
-                y = data[label_column_name].to_numpy()
-            else:
-                unique_labels = pd.unique(data[label_column_name])
-                labelDialog = LabelMappingDialog(unique_labels)
-                if labelDialog.exec_():
-                    labelMappings = labelDialog.getLabelMappings()
-                    if labelMappings:
-                        data[label_column_name] = data[label_column_name].map(labelMappings).astype(float)
-                        y = data[label_column_name].to_numpy()
-                    else:
-                        return  # If no mapping provided, exit
+        if sample_column_name is None:
+            data['Sample'] = range(1, len(data) + 1)
+            sample_column_name = 'Sample'
 
-            for feature_column in feature_columns:
-                data[feature_column] = pd.to_numeric(data[feature_column], errors='coerce')
+        # Label 처리 (숫자면 그대로, 문자면 매핑)
+        if pd.api.types.is_numeric_dtype(data[label_column_name]):
+            y = data[label_column_name].to_numpy()
+            self.label_mapping = None
+        else:
+            unique_labels = pd.unique(data[label_column_name])
+            labelDialog = LabelMappingDialog(unique_labels)
+            if not labelDialog.exec_():
+                return
+            labelMappings = labelDialog.getLabelMappings()
+            if not labelMappings:
+                return
+            self.label_mapping = labelMappings
+            data[label_column_name] = data[label_column_name].map(labelMappings).astype(float)
+            y = data[label_column_name].to_numpy()
 
+        # Feature numeric 변환
+        for col in feature_columns:
+            data[col] = pd.to_numeric(data[col], errors='coerce')
 
-                data = data.rename(columns={sample_column_name: 'Sample'})  # Change the sample column name to 'Sample'
-                data = data.rename(columns={label_column_name: 'Label'})
-                self.original_data = data[['Sample'] + feature_columns]  # 샘플 이름과 피처들
-                self.X = data[feature_columns].to_numpy()
-                self.y = y
+        # 컬럼명 통일
+        data = data.rename(columns={sample_column_name: 'Sample', label_column_name: 'Label'})
 
-                self.showCsvData(data.values.tolist(), data.columns.tolist())
+        # 저장
+        self.original_data = data[['Sample'] + feature_columns]
+        self.X = data[feature_columns].to_numpy()
+        self.y = y
 
+        # 표시
+        self.showCsvData(data[['Sample'] + feature_columns + ['Label']].values.tolist(),
+                         ['Sample'] + feature_columns + ['Label'])
 
     def getSampleNames(self):
         return self.original_data['Sample'].tolist()
