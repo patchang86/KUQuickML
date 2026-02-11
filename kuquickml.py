@@ -1,4 +1,4 @@
-print("실행 중입니다... PC 환경에 따라 최대 1분 가량 소요될 수 있습니다. 프로그램이 실행 중인 동안 본 콘솔 창을 닫지 마십시오.")
+print("Running... Depending on your PC environment, this may take up to about 1 minute. Do not close this console window while the program is running.")
 import sys
 import os
 import random
@@ -15,6 +15,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon, QDoubleValidator, QFont
 from PyQt5.QtCore import Qt, QCoreApplication
 from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold, StratifiedKFold, GroupKFold, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, RobustScaler, Normalizer
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.decomposition import PCA
@@ -22,6 +23,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.neighbors import NeighborhoodComponentsAnalysis as NCA
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.metrics import mean_squared_error, r2_score, confusion_matrix
+from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import mean_squared_error, confusion_matrix, accuracy_score
 from dialogs.data_scaling import DataScaler
@@ -32,6 +34,18 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from sklearn.exceptions import ConvergenceWarning
 import warnings
+# Suppress scikit-learn feature-name mismatch warnings in console output.
+# The app already blocks loading if feature names/order do not match, so this warning only adds noise.
+warnings.filterwarnings(
+    "ignore",
+    message=r"X has feature names, but .* was fitted without feature names",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"X does not have valid feature names, but NeighborhoodComponentsAnalysis was fitted with feature names",
+    category=UserWarning,
+)
 import mplcursors
 from sklearn.svm import SVR
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -46,7 +60,7 @@ from sklearn.base import clone
 
 
 def resource_path(relative_path):
-    """ PyInstaller로 패키징할 때 파일 경로를 반환하는 함수 """
+    """ Function that returns the file path when packaging with PyInstaller """
     if hasattr(sys, '_MEIPASS'):
         base_path = sys._MEIPASS
     else:
@@ -82,7 +96,7 @@ class MyApp(QMainWindow):
         self.mainTab = QWidget()
         self.scaledDataTab = QWidget()
         self.predictionTab = QWidget()
-        self.previousModelPredictionTab = QWidget()  # 새 탭 추가
+        self.previousModelPredictionTab = QWidget()  # comment
 
         self.tabs.addTab(self.mainTab, "Main")
         self.tabs.addTab(self.scaledDataTab, "Scaled Data")
@@ -92,7 +106,7 @@ class MyApp(QMainWindow):
         self.setupMainTab()
         self.setupScaledDataTab()
         self.setupPredictionTab()
-        self.setupPreviousModelPredictionTab()  # 새 탭 설정 함수
+        self.setupPreviousModelPredictionTab()  # comment
 
         self.show()
 
@@ -115,7 +129,7 @@ class MyApp(QMainWindow):
 
         datasplitMenu = QMenu('3. Test set Split',self)
         datasplitAction = QAction('Random selection', self)
-        datasplitAction.triggered.connect(self.addDataSplitTab)  # 이벤트 연결
+        datasplitAction.triggered.connect(self.addDataSplitTab)  # comment
         datasplitMenu.addAction(datasplitAction)
         menubar.addMenu(datasplitMenu)
 
@@ -124,7 +138,7 @@ class MyApp(QMainWindow):
         knnAction.triggered.connect(self.addKnnTab)
         algorithmMenu.addAction(knnAction)
         mlpAction = QAction('Multi-Layer Perceptron', self)
-        mlpAction.triggered.connect(self.addMLPTab)  # 이벤트 연결
+        mlpAction.triggered.connect(self.addMLPTab)  # comment
         algorithmMenu.addAction(mlpAction)
         rfAction = QAction('Random Forest', self)
         rfAction.triggered.connect(self.addRFTab)
@@ -152,7 +166,7 @@ class MyApp(QMainWindow):
         fileMenu.addAction(exitAction)
 
     def _drop_sample_and_numeric(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Sample 컬럼 제거 + 전부 numeric 강제(에러는 NaN)"""
+        """Remove the Sample column + force everything to numeric (errors become NaN)"""
         if 'Sample' in df.columns:
             df = df.drop(columns=['Sample'])
         df = df.apply(pd.to_numeric, errors='coerce')
@@ -160,13 +174,13 @@ class MyApp(QMainWindow):
 
     def _fit_preprocess_train_test(self, X_train_df: pd.DataFrame, X_test_df: pd.DataFrame, y_train):
         """
-        학습용 전처리(학습 데이터 기준으로 scaler/reducer fit)
-        반환: X_train_used, X_test_used, fitted_scaler, fitted_reducer, feature_names
+        Preprocessing for training (fit scaler/reducer on the training data)
+        Returns: X_train_used, X_test_used, fitted_scaler, fitted_reducer, feature_names
         """
-        # 0) feature 이름 저장 (순서가 가장 중요)
+        # comment
         feature_names = list(X_train_df.columns)
 
-        # 1) scaler (모델마다 따로 fit된 scaler를 갖게 함)
+        # comment
         base_scaler = self.scaler
         scaler = clone(base_scaler) if base_scaler else None
 
@@ -177,14 +191,14 @@ class MyApp(QMainWindow):
             X_train_scaled = X_train_df.values
             X_test_scaled = X_test_df.values
 
-        # 2) reducer (반드시 scaler 이후에 fit/transform)
+        # comment
         reducer = None
         selected = self.getSelectedDimReductionMethod()
         if selected:
             _, reducer = selected
-            reducer.fit(X_train_scaled, y_train)
-            X_train_used = reducer.transform(X_train_scaled)
-            X_test_used = reducer.transform(X_test_scaled)
+            reducer.fit(np.asarray(X_train_scaled), y_train)
+            X_train_used = reducer.transform(np.asarray(X_train_scaled))
+            X_test_used = reducer.transform(np.asarray(X_test_scaled))
         else:
             X_train_used = X_train_scaled
             X_test_used = X_test_scaled
@@ -219,7 +233,7 @@ class MyApp(QMainWindow):
                 feature_names = None
                 label_mapping = None
 
-            # loadUnknownSample에서 사용하기 위해 저장
+            # comment
             self.loaded_bundle = loaded_bundle
 
             model_name = os.path.basename(filename).replace(".joblib", "")
@@ -254,7 +268,7 @@ class MyApp(QMainWindow):
             QMessageBox.warning(self, "Load Error", f"Failed to load model:\n{e}")
 
     def setupPreviousModelPredictionTab(self):
-        # 이곳에서 탭의 레이아웃 및 다른 UI 구성 요소를 설정합니다.
+        # comment
         layout = QVBoxLayout()
         someLabel = QLabel("This is the Previous Model Prediction Tab")
         layout.addWidget(someLabel)
@@ -342,20 +356,25 @@ class MyApp(QMainWindow):
         layout = QVBoxLayout()
         desc_style = "color: #555; font-size: 10pt; margin-bottom: 4px;"
 
-        # --- 상단: SVM 개요 설명 ---
+        # comment
         svm_overview = QLabel(
             "<h3>⚙️ Support Vector Machine (SVM)</h3>"
-            "<p>SVM은 주어진 데이터를 분류하거나 회귀할 때, 클래스 간의 경계를 최적으로 구분하는 초평면을 찾는 알고리즘입니다.<br>"
-            "커널 함수를 사용해 비선형적인 데이터도 고차원 공간에서 분리할 수 있습니다.</p>"
+            "<p>SVM is an algorithm that finds a hyperplane that best separates classes (or fits a regression function).<br>"
+            "With kernel functions, it can also separate nonlinear data in a higher-dimensional space.</p>"
         )
         svm_overview.setWordWrap(True)
         layout.addWidget(svm_overview)
 
-        # --- 파라미터 박스 ---
+        # comment
         groupBox = QFrame()
         groupBox.setFrameShape(QFrame.Box)
         groupBox.setFrameShadow(QFrame.Sunken)
         groupBoxLayout = QVBoxLayout(groupBox)
+        paramGrid = QGridLayout()
+        paramGrid.setHorizontalSpacing(10)
+        paramGrid.setVerticalSpacing(10)
+        groupBoxLayout.addLayout(paramGrid)
+
 
         # SVM Type
         frame_type = QFrame()
@@ -365,14 +384,14 @@ class MyApp(QMainWindow):
         label = QLabel("Select SVM Type:")
         self.svm_type = QComboBox()
         self.svm_type.addItems(["One-vs-Rest SVM", "One-vs-One SVM"])
-        desc = QLabel("SVM의 분류 전략을 선택합니다.<br>"
-                      "<b>One-vs-Rest</b>: 한 클래스를 나머지 전부와 비교 (빠름)<br>"
-                      "<b>One-vs-One</b>: 클래스 간 모든 조합을 학습 (정확도↑)")
+        desc = QLabel("Select the SVM classification strategy.<br>"
+                      "<b>One-vs-Rest</b>: Compare one class vs. all others (faster)<br>"
+                      "<b>One-vs-One</b>: Train all pairwise class combinations (often higher accuracy)")
         desc.setStyleSheet(desc_style)
         frame_type_layout.addWidget(label)
         frame_type_layout.addWidget(self.svm_type)
         frame_type_layout.addWidget(desc)
-        groupBoxLayout.addWidget(frame_type)
+        paramGrid.addWidget(frame_type, 0, 0)
 
         # Kernel Type
         frame_kernel = QFrame()
@@ -382,16 +401,16 @@ class MyApp(QMainWindow):
         label = QLabel("Select Kernel Type:")
         self.kernel_type = QComboBox()
         self.kernel_type.addItems(["linear", "poly", "rbf", "sigmoid"])
-        desc = QLabel("커널은 입력 데이터를 고차원 공간으로 변환하는 함수입니다.<br>"
-                      "<b>linear</b>: 선형 경계, 빠름<br>"
-                      "<b>poly</b>: 다항식 커널<br>"
-                      "<b>rbf</b>: 가우시안 기반, 비선형에 강함<br>"
-                      "<b>sigmoid</b>: 신경망 유사 특성")
+        desc = QLabel("A kernel maps input data into a higher-dimensional space.<br>"
+                      "<b>linear</b>: Linear boundary, fast<br>"
+                      "<b>poly</b>: Polynomial kernel<br>"
+                      "<b>rbf</b>: Gaussian-based, strong for nonlinear patterns<br>"
+                      "<b>sigmoid</b>: Neural-network-like behavior")
         desc.setStyleSheet(desc_style)
         frame_kernel_layout.addWidget(label)
         frame_kernel_layout.addWidget(self.kernel_type)
         frame_kernel_layout.addWidget(desc)
-        groupBoxLayout.addWidget(frame_kernel)
+        paramGrid.addWidget(frame_kernel, 0, 1)
 
         # C Value
         frame_c = QFrame()
@@ -403,13 +422,13 @@ class MyApp(QMainWindow):
         self.c_value.setRange(0.01, 100.0)
         self.c_value.setValue(1.0)
         self.c_value.setSingleStep(0.01)
-        desc = QLabel("C 값은 오류 허용 정도를 조절하는 규제(regularization) 강도입니다.<br>"
-                      "작으면 일반화 ↑ (느리지만 안정), 크면 훈련 정확도 ↑ (과적합 위험).")
+        desc = QLabel("C controls the regularization strength (how much error is tolerated).<br>"
+                      "Smaller C → better generalization (more stable), larger C → higher training accuracy (risk of overfitting).")
         desc.setStyleSheet(desc_style)
         frame_c_layout.addWidget(label)
         frame_c_layout.addWidget(self.c_value)
         frame_c_layout.addWidget(desc)
-        groupBoxLayout.addWidget(frame_c)
+        paramGrid.addWidget(frame_c, 1, 0)
 
         # Random State
         frame_random = QFrame()
@@ -420,12 +439,33 @@ class MyApp(QMainWindow):
         self.random_state_input = QSpinBox()
         self.random_state_input.setRange(0, 999999)
         self.random_state_input.setValue(42)
-        desc = QLabel("무작위 초기화를 제어하는 시드 값입니다.<br>같은 결과를 재현하려면 동일한 값을 유지하세요.")
+        desc = QLabel("Seed value to control randomness.<br>Use the same value to reproduce identical results.")
         desc.setStyleSheet(desc_style)
         frame_random_layout.addWidget(label)
         frame_random_layout.addWidget(self.random_state_input)
         frame_random_layout.addWidget(desc)
-        groupBoxLayout.addWidget(frame_random)
+        paramGrid.addWidget(frame_random, 1, 1)
+
+        # --- SVR (Regression) Parameters ---
+        frame_svr = QFrame()
+        frame_svr.setFrameShape(QFrame.Box)
+        frame_svr.setFrameShadow(QFrame.Sunken)
+        frame_svr_layout = QVBoxLayout(frame_svr)
+        title = QLabel("<b>SVR (Regression) Parameters</b>")
+        frame_svr_layout.addWidget(title)
+
+        label = QLabel("SVR Epsilon:")
+        self.svrEpsilonInput = QDoubleSpinBox()
+        self.svrEpsilonInput.setRange(0.0, 10.0)
+        self.svrEpsilonInput.setValue(0.1)
+        self.svrEpsilonInput.setSingleStep(0.01)
+        desc = QLabel("Width of the epsilon-insensitive tube. Smaller values can make the model more sensitive to data.")
+        desc.setStyleSheet(desc_style)
+        frame_svr_layout.addWidget(label)
+        frame_svr_layout.addWidget(self.svrEpsilonInput)
+        frame_svr_layout.addWidget(desc)
+
+        paramGrid.addWidget(frame_svr, 2, 0, 1, 2)
 
         # Dimensionality reduction
         frame_reducer = QFrame()
@@ -438,17 +478,17 @@ class MyApp(QMainWindow):
         self.ncaCheckBox = QCheckBox("NCA")
         self.noneCheckBox = QCheckBox("None")
 
-        self.pcaCheckBox.setChecked(True)  # PCA를 기본값으로 설정
+        self.pcaCheckBox.setChecked(True)  # comment
         self.dimensionalityGroup = QButtonGroup()
         for checkbox in [self.pcaCheckBox, self.ldaCheckBox, self.ncaCheckBox, self.noneCheckBox]:
             frame_reducer_layout.addWidget(checkbox)
             self.dimensionalityGroup.addButton(checkbox)
         self.dimensionalityGroup.setExclusive(True)
-        desc = QLabel("차원 축소는 데이터를 저차원 공간으로 투영하여 계산 효율과 시각화를 돕습니다.<br>"
-                      "<b>PCA</b>: 주성분 분석 (일반적)<br>"
-                      "<b>LDA</b>: 클래스 간 분리 최적화<br>"
-                      "<b>NCA</b>: 거리 기반 분류에 적합<br>"
-                      "<b>None</b>: 차원 축소 미적용")
+        desc = QLabel("Dimensionality reduction projects data into a lower-dimensional space to improve efficiency and visualization.<br>"
+                      "<b>PCA</b>: Principal Component Analysis (common)<br>"
+                      "<b>LDA</b>: Optimizes class separation<br>"
+                      "<b>NCA</b>: Suitable for distance-based classification<br>"
+                      "<b>None</b>: No dimensionality reduction")
         desc.setStyleSheet(desc_style)
         frame_reducer_layout.addWidget(desc)
         groupBoxLayout.addWidget(frame_reducer)
@@ -457,7 +497,7 @@ class MyApp(QMainWindow):
         groupBoxLayout.setSpacing(15)
         layout.addWidget(groupBox)
 
-        # --- 버튼 ---
+        # comment
         buttons_layout = QHBoxLayout()
         self.createSVMModelButton = QPushButton("Create SVM Classification Model")
         self.createSVMModelButton.setFont(QFont('Arial', 12, QFont.Bold))
@@ -472,9 +512,18 @@ class MyApp(QMainWindow):
             "QPushButton { padding: 10px; border-radius: 10px; border: 2px solid #000000; }")
         self.createSVMRegressionModelButton.clicked.connect(self.createSVMRegressionModel)
         buttons_layout.addWidget(self.createSVMRegressionModelButton)
+
+        # 5-fold CV buttons
+        self.svmCvClassButton = QPushButton("5-Fold CV (SVM Classification)")
+        self.svmCvClassButton.clicked.connect(self.runSVMClassificationCV)
+        buttons_layout.addWidget(self.svmCvClassButton)
+
+        self.svmCvRegButton = QPushButton("5-Fold CV (SVM Regression)")
+        self.svmCvRegButton.clicked.connect(self.runSVMRegressionCV)
+        buttons_layout.addWidget(self.svmCvRegButton)
         layout.addLayout(buttons_layout)
 
-        # --- 오른쪽: 폰트 설정 ---
+        # comment
         right_side_layout = QVBoxLayout()
         right_side_layout.setAlignment(Qt.AlignTop)
         right_side_layout.setSizeConstraint(QVBoxLayout.SetFixedSize)
@@ -502,7 +551,7 @@ class MyApp(QMainWindow):
 
         right_side_layout.addWidget(font_box)
 
-        # --- 전체 배치 ---
+        # comment
         main_layout = QHBoxLayout()
         main_layout.addLayout(layout)
         main_layout.addLayout(right_side_layout)
@@ -512,10 +561,10 @@ class MyApp(QMainWindow):
 
     def createSVMModel(self):
         loading = QProgressDialog(
-            "모델 생성 중입니다...\n\n컴퓨터 사양에 따라 몇 분 정도 소요될 수 있습니다.",
+            "Creating the model...\n\nDepending on your computer, this may take a few minutes.",
             None, 0, 0, self
         )
-        loading.setWindowTitle("SVM 모델 생성 중")
+        loading.setWindowTitle("Creating SVM model")
         loading.setWindowModality(Qt.ApplicationModal)
         loading.setMinimumWidth(420)
         loading.setAutoClose(False)
@@ -538,7 +587,7 @@ class MyApp(QMainWindow):
 
             feature_names = list(X_train_numeric.columns)
 
-            # reducer (split 단계에서 이미 scaled/raw가 결정되므로 여기서 추가 스케일링 금지)
+            # comment
             selected = self.getSelectedDimReductionMethod()
             reducer = None
             if selected:
@@ -579,18 +628,31 @@ class MyApp(QMainWindow):
             overall_accuracy = np.sum(np.diag(cm)) / np.sum(cm)
             self.plotScatterWithDecisionBoundary(
                 X_train_used, y_train, X_test_used, y_pred_test, svc_model,
-                f"SVM Scatter Plot with Decision Boundary\nTest accuracy = {overall_accuracy:.3f}"
+                f"SVM Scatter Plot with Decision Boundary (kernel={kernel})\nTest accuracy = {overall_accuracy:.3f}"
             )
 
-            # 중요계수: linear + reducer 없음일 때만
-            if kernel == "linear" and reducer is None:
+            # comment
+            if kernel == "linear" and reducer is None and hasattr(svc_model, "coef_"):
                 self.showImportantCoefficients(X_train_numeric, svc_model)
+            else:
+                # comment
+                self.showSVMImportanceUnavailable(
+                    kernel=kernel,
+                    reducer=reducer,
+                    X_test=X_test_numeric,
+                    y_test=y_test,
+                    model=svc_model,
+                    feature_names=feature_names,
+                    title_prefix="SVM (Classification)",
+                    task="classification"
+                )
 
             self.plotObservedVsPredicted(
-                y_train, y_pred_train, y_test, y_pred_test, "SVC Observed vs Predicted"
+                y_train, y_pred_train, y_test, y_pred_test,
+                f"SVC Observed vs Predicted (kernel={kernel})"
             )
 
-            # ✅ bundle 저장 (예측 탭에서 그대로 사용)
+            # comment
             self.models["SV Classification"] = {
                 "model": svc_model,
                 "scaler": self._get_bundle_scaler(),
@@ -621,7 +683,7 @@ class MyApp(QMainWindow):
 
             feature_names = list(X_train_numeric.columns)
 
-            # 회귀에서는 PCA만 안전( LDA/NCA는 분류용 성격이라 에러/왜곡 가능 )
+            # comment
             reducer = None
             if self.pcaCheckBox.isChecked():
                 reducer = PCA(n_components=2)
@@ -629,14 +691,15 @@ class MyApp(QMainWindow):
                 X_train_used = reducer.transform(X_train_numeric.values)
                 X_test_used = reducer.transform(X_test_numeric.values)
             else:
-                # LDA/NCA/None 선택 시: 그냥 차원축소 없이 진행
+                # comment
                 X_train_used = X_train_numeric.values
                 X_test_used = X_test_numeric.values
 
             kernel = self.kernel_type.currentText()
-            c_value = self.c_value.value()
+            c_value = float(self.c_value.value())
+            epsilon = float(self.svrEpsilonInput.value())
 
-            svr_model = SVR(kernel=kernel, C=c_value)
+            svr_model = SVR(kernel=kernel, C=c_value, epsilon=epsilon)
             svr_model.fit(X_train_used, y_train)
 
             y_pred_train = svr_model.predict(X_train_used)
@@ -648,10 +711,32 @@ class MyApp(QMainWindow):
 
             if kernel == "linear" and reducer is None and hasattr(svr_model, "coef_"):
                 self.showImportantCoefficients(X_train_numeric, svr_model)
+            else:
+                # comment
+                self.showSVMImportanceUnavailable(
+                    kernel=kernel,
+                    reducer=reducer,
+                    X_test=X_test_numeric,
+                    y_test=y_test,
+                    model=svr_model,
+                    feature_names=feature_names,
+                    title_prefix="SVR (Regression)",
+                    task="regression"
+                )
+
+
+            # comment
+            if reducer is not None and hasattr(X_train_used, "shape") and X_train_used.shape[1] == 2:
+                self.plotScatterWithRegressionSurface(
+                    X_train_used, y_train,
+                    X_test_used, y_test,
+                    svr_model,
+                    f"SVR Regression Surface (kernel={kernel})"
+                )
 
             self.plotObservedVsPredicted(
                 y_train, y_pred_train, y_test, y_pred_test,
-                f"SVR Observed vs Predicted\nTest R2={r2_test:.3f}, RMSE={rmse_test:.3f}"
+                f"SVR Observed vs Predicted (kernel={kernel})\nTest R2={r2_test:.3f}, RMSE={rmse_test:.3f}"
             )
 
             self.models["SV Regression"] = {
@@ -667,64 +752,211 @@ class MyApp(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "SVR Error", f"Failed to create SVR model:\n{e}")
 
+    # ------------------------------
+    # 5-fold CV runners (SVM)
+    # ------------------------------
+    def runSVMClassificationCV(self):
+        try:
+            # comment
+            svm_type_text = self.svm_type.currentText()
+            kernel = self.kernel_type.currentText()
+            c_value = float(self.c_value.value())
+
+            base_svc = SVC(C=c_value, kernel=kernel, probability=True, decision_function_shape="ovr")
+
+            if "One-vs-Rest" in svm_type_text:
+                estimator = OneVsRestClassifier(base_svc)
+            elif "One-vs-One" in svm_type_text:
+                # Use native SVC multiclass (internally OvO) but keep probability outputs for ROC-AUC
+                estimator = SVC(C=c_value, kernel=kernel, probability=True, decision_function_shape="ovo")
+            else:
+                estimator = base_svc
+
+            self.run_5fold_cv(estimator, task="classification")
+        except Exception as e:
+            QMessageBox.warning(self, "CV Error", str(e))
+
+    def runSVMRegressionCV(self):
+        try:
+            kernel = self.kernel_type.currentText()
+            c_value = self.c_value.value()
+            epsilon = self.svrEpsilonInput.value()
+            estimator = SVR(C=c_value, kernel=kernel, epsilon=epsilon)
+            self.run_5fold_cv(estimator, task="regression")
+        except Exception as e:
+            QMessageBox.warning(self, "CV Error", str(e))
+
+
+
     def plotScatterWithDecisionBoundary(self, X_train_reduced, y_train, X_test_reduced, y_pred_test, model, title):
+        """Visualize the classification decision boundary in a 2D reduced space.
+        - binary: use decision_function (or proba) for a smoother boundary
+        - multiclass: visualize by predicted class on a grid
+        """
         plt.figure(figsize=(10, 8))
 
-        # 결정 경계 그리기 위한 메쉬 그리드 생성
         x_min, x_max = X_train_reduced[:, 0].min() - 1, X_train_reduced[:, 0].max() + 1
         y_min, y_max = X_train_reduced[:, 1].min() - 1, X_train_reduced[:, 1].max() + 1
-        xx, yy = np.meshgrid(np.arange(x_min, x_max, 0.01),
-                             np.arange(y_min, y_max, 0.01))
 
-        # 예측 수행
-        Z = model.predict(np.c_[xx.ravel(), yy.ravel()])
-        Z = Z.reshape(xx.shape)
+        # comment
+        grid_res = 400
+        xx, yy = np.meshgrid(
+            np.linspace(x_min, x_max, grid_res),
+            np.linspace(y_min, y_max, grid_res)
+        )
+        grid = np.c_[xx.ravel(), yy.ravel()]
 
-        # 결정 경계 시각화
-        plt.contourf(xx, yy, Z, alpha=0.3, cmap='viridis')
-
-        # 레이블별 색상 설정
+        # comment
         unique_labels = np.unique(np.concatenate((y_train, y_pred_test)))
+        is_multiclass = len(unique_labels) > 2
+
+        if (not is_multiclass) and hasattr(model, "decision_function"):
+            # comment
+            score = model.decision_function(grid).reshape(xx.shape)
+            plt.contourf(xx, yy, score, levels=60, alpha=0.30, cmap="viridis")
+            # comment
+            try:
+                plt.contour(xx, yy, score, levels=[0], colors="k", linewidths=1.0)
+            except Exception:
+                pass
+        elif (not is_multiclass) and hasattr(model, "predict_proba"):
+            proba = model.predict_proba(grid)
+            # comment
+            if isinstance(proba, np.ndarray) and proba.ndim == 2 and proba.shape[1] >= 2:
+                p1 = proba[:, 1].reshape(xx.shape)
+                plt.contourf(xx, yy, p1, levels=60, alpha=0.30, cmap="viridis")
+                try:
+                    plt.contour(xx, yy, p1, levels=[0.5], colors="k", linewidths=1.0)
+                except Exception:
+                    pass
+            else:
+                Z = model.predict(grid).reshape(xx.shape)
+                plt.contourf(xx, yy, Z, alpha=0.30, cmap="viridis")
+        else:
+            # multiclass (or fallback): class label map
+            Z = model.predict(grid).reshape(xx.shape)
+            plt.contourf(xx, yy, Z, alpha=0.30, cmap="viridis")
+
+        # comment
         label_colors = {
             label: "#{:02x}{:02x}{:02x}".format(
                 random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
             for label in unique_labels
         }
 
-        # 훈련 및 테스트 데이터 시각화
-        scatter_train_handles = []
-        scatter_test_handles = []
+        legend_widget = getattr(self, "legendNameInput", None)
+        legend_name = legend_widget.text() if (legend_widget is not None and legend_widget.text()) else "Label"
 
+        # Train/Test scatter
         for label in unique_labels:
             train_indices = np.where(y_train == label)[0]
-            test_indices = np.where(y_pred_test == label)[0]
+            test_indices = np.where(y_pred_test == label)[0]  # comment
+
+            color = label_colors[label]
 
             if len(train_indices) > 0:
-                handle = plt.scatter(
+                plt.scatter(
                     X_train_reduced[train_indices, 0], X_train_reduced[train_indices, 1],
-                    c=label_colors[label], marker='o', alpha=0.5,
-                    label=f'Train Class {label}'
+                    c=color, s=30, marker="o", alpha=0.55,
+                    label=f"Train {legend_name} {label}"
                 )
-                scatter_train_handles.append(handle)
-
             if len(test_indices) > 0:
-                handle = plt.scatter(
+                plt.scatter(
                     X_test_reduced[test_indices, 0], X_test_reduced[test_indices, 1],
-                    c=label_colors[label], marker='x', alpha=0.5,
-                    label=f'Test Class {label}'
+                    c=color, s=30, marker="x", alpha=0.85,
+                    label=f"Test {legend_name} {label}"
                 )
-                scatter_test_handles.append(handle)
+
+        legend = plt.legend()
+        legend.set_draggable(True)
+        plt.title(title, fontsize=self.fontSizeInput.value(), fontname=self.fontTypeComboBox.currentText())
+        plt.xlabel("Component 1", fontsize=self.fontSizeInput.value(), fontname=self.fontTypeComboBox.currentText())
+        plt.ylabel("Component 2", fontsize=self.fontSizeInput.value(), fontname=self.fontTypeComboBox.currentText())
+        plt.show()
 
 
-        legend_elements = scatter_train_handles + scatter_test_handles
 
-        # 범례 설정 및 드래그 가능하게 설정
-        legend = plt.legend(handles=legend_elements, loc='best', title="Classes", frameon=True)
+    def plotScatterWithRegressionSurface(self, X_train_reduced, y_train, X_test_reduced, y_test, model, title):
+        """Display regression predictions in a 2D reduced space in a form similar to a classification boundary plot.
+        - background: fill with contourf of grid predictions
+        - points: Train/Test samples
+        """
+        plt.figure(figsize=(10, 8))
+
+        x_min, x_max = X_train_reduced[:, 0].min() - 1, X_train_reduced[:, 0].max() + 1
+        y_min, y_max = X_train_reduced[:, 1].min() - 1, X_train_reduced[:, 1].max() + 1
+
+        grid_res = 400
+        xx, yy = np.meshgrid(
+            np.linspace(x_min, x_max, grid_res),
+            np.linspace(y_min, y_max, grid_res)
+        )
+
+        Z = model.predict(np.c_[xx.ravel(), yy.ravel()]).reshape(xx.shape)
+
+        cf = plt.contourf(xx, yy, Z, levels=60, alpha=0.30, cmap="viridis")
+        cb = plt.colorbar(cf)
+        cb.set_label("Predicted value (background)")
+
+        y_train_arr = np.asarray(y_train)
+        y_test_arr = np.asarray(y_test)
+        y_all = np.concatenate([y_train_arr, y_test_arr])
+        unique_vals = np.unique(y_all)
+        max_unique_direct = 15
+
+        def _is_integer_like(arr):
+            if arr.size == 0:
+                return False
+            return np.all(np.isfinite(arr)) and np.all(np.abs(arr - np.round(arr)) < 1e-9)
+
+        use_direct = (unique_vals.size <= max_unique_direct) or _is_integer_like(unique_vals)
+
+        if use_direct:
+            categories = [str(v) for v in unique_vals]
+            val_to_cat = {v: str(v) for v in unique_vals}
+            y_train_cat = np.array([val_to_cat[v] for v in y_train_arr], dtype=object)
+            y_test_cat = np.array([val_to_cat[v] for v in y_test_arr], dtype=object)
+        else:
+            n_bins = min(10, max(3, int(np.sqrt(len(y_all)))))
+            try:
+                bins = pd.qcut(y_all, q=n_bins, duplicates="drop")
+            except Exception:
+                bins = pd.cut(y_all, bins=n_bins, duplicates="drop")
+
+            bin_str = bins.astype(str)
+            y_train_cat = bin_str[:len(y_train_arr)]
+            y_test_cat = bin_str[len(y_train_arr):]
+            categories = list(pd.unique(bin_str))
+
+        label_colors = {
+            cat: "#{:02x}{:02x}{:02x}".format(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            for cat in categories
+        }
+
+        for cat in categories:
+            train_idx = np.where(y_train_cat == cat)[0]
+            test_idx = np.where(y_test_cat == cat)[0]
+            color = label_colors[cat]
+
+            if len(train_idx) > 0:
+                plt.scatter(
+                    X_train_reduced[train_idx, 0], X_train_reduced[train_idx, 1],
+                    c=color, s=30, marker='o', alpha=0.55,
+                    label=f"Train label {cat}"
+                )
+            if len(test_idx) > 0:
+                plt.scatter(
+                    X_test_reduced[test_idx, 0], X_test_reduced[test_idx, 1],
+                    c=color, s=70, marker='x', alpha=0.90,
+                    label=f"Test label {cat}"
+                )
+
+        legend = plt.legend()
         legend.set_draggable(True)
 
-        plt.xlabel('Component 1')
-        plt.ylabel('Component 2')
-        plt.title(title)
+        plt.title(title, fontsize=self.fontSizeInput.value(), fontname=self.fontTypeComboBox.currentText())
+        plt.xlabel("Component 1", fontsize=self.fontSizeInput.value(), fontname=self.fontTypeComboBox.currentText())
+        plt.ylabel("Component 2", fontsize=self.fontSizeInput.value(), fontname=self.fontTypeComboBox.currentText())
         plt.show()
 
     def showImportantCoefficients(self, X_train_numeric, model):
@@ -738,6 +970,13 @@ class MyApp(QMainWindow):
         dialog.setGeometry(100, 100, 600, 400)
 
         dialog_layout = QVBoxLayout(dialog)
+
+        info = QLabel(
+            "Feature importance is shown using the coefficients (coef_) of a linear SVM/SVR.\n"
+            "A larger absolute value means a stronger influence, and the sign (+/−) indicates the direction (increase/decrease) of the prediction."
+        )
+        info.setWordWrap(True)
+        dialog_layout.addWidget(info)
 
         table = QTableWidget(dialog)
         table.setRowCount(len(importance))
@@ -755,10 +994,130 @@ class MyApp(QMainWindow):
         dialog.setWindowModality(Qt.NonModal)
         dialog.show()
 
+
+    def showSVMImportanceUnavailable(self, kernel, reducer, X_test, y_test, model, feature_names, title_prefix="SVM", task="classification"):
+        """If feature importance cannot be displayed via coef_, show the reason and
+        compute permutation importance when possible.
+
+        - X_test is expected to be a DataFrame in the *original feature space* (before any reduction/transform).
+        - If a reducer exists, permutation importance still permutes the *original features*,
+          but prediction is passed through reducer.transform before reaching the trained model.
+        """
+
+        class _ReducerWrappedEstimator:
+            """Wrapper for permutation_importance: original X -> (reducer) -> model.predict"""
+            def __init__(self, fitted_model, fitted_reducer=None):
+                self._model = fitted_model
+                self._reducer = fitted_reducer
+
+            def _to_array(self, X):
+                try:
+                    return X.values  # DataFrame
+                except Exception:
+                    return X
+
+            def predict(self, X):
+                Xv = self._to_array(X)
+                if self._reducer is not None:
+                    Xv = self._reducer.transform(Xv)
+                return self._model.predict(Xv)
+
+            def decision_function(self, X):
+                if hasattr(self._model, "decision_function"):
+                    Xv = self._to_array(X)
+                    if self._reducer is not None:
+                        Xv = self._reducer.transform(Xv)
+                    return self._model.decision_function(Xv)
+                raise AttributeError("Wrapped model has no decision_function")
+
+            def predict_proba(self, X):
+                if hasattr(self._model, "predict_proba"):
+                    Xv = self._to_array(X)
+                    if self._reducer is not None:
+                        Xv = self._reducer.transform(Xv)
+                    return self._model.predict_proba(Xv)
+                raise AttributeError("Wrapped model has no predict_proba")
+
+
+            @property
+            def classes_(self):
+                return getattr(self._model, "classes_", None)
+
+            def fit(self, X, y=None):
+                """Dummy fit for sklearn scorer compatibility (estimator is already fitted)."""
+                return self
+
+            def get_params(self, deep=True):
+                # For sklearn's inspection/scoring utilities
+                return {"fitted_model": self._model, "fitted_reducer": self._reducer}
+
+            def set_params(self, **params):
+                # Minimal setter for sklearn compatibility
+                if "fitted_model" in params:
+                    self._model = params["fitted_model"]
+                if "fitted_reducer" in params:
+                    self._reducer = params["fitted_reducer"]
+                return self
+
+        reasons = []
+        if kernel != "linear":
+            reasons.append("The selected kernel is nonlinear, so coefficients (coef_) for input features are not defined.")
+        if reducer is not None:
+            reasons.append("Dimensionality reduction transformed the original features, so coef_-based importance cannot be computed on the original feature basis.")
+
+        reason_text = "\n".join(f"- {r}" for r in reasons) if reasons else "- Cannot compute coef_-based importance."
+
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.setWindowTitle("Feature Importance")
+        msg_box.setText(
+            f"{title_prefix} cannot display feature importance using coef_.\n\n"
+            f"{reason_text}\n\n"
+            "Instead, permutation importance (how much the score drops when a feature is shuffled) can be computed and displayed.\n"
+            "(Permutation importance can be computationally expensive.)"
+        )
+
+        perm_btn = msg_box.addButton("Compute permutation importance", QMessageBox.ActionRole)
+        close_btn = msg_box.addButton("Close", QMessageBox.RejectRole)
+        msg_box.setDefaultButton(close_btn)
+        msg_box.exec_()
+
+        if msg_box.clickedButton() != perm_btn:
+            return
+
+        if not feature_names:
+            try:
+                feature_names = list(X_test.columns)
+            except Exception:
+                feature_names = [f"Feature {i+1}" for i in range(X_test.shape[1])]
+
+        try:
+            wrapped = _ReducerWrappedEstimator(model, reducer)
+            scoring = "accuracy" if task == "classification" else "r2"
+
+            perm = permutation_importance(
+                wrapped,
+                X_test,  # comment
+                y_test,
+                n_repeats=10,
+                random_state=42,
+                scoring=scoring
+            )
+            sorted_idx = np.argsort(perm.importances_mean)[::-1]
+            feature_importances = [(feature_names[i], float(perm.importances_mean[i])) for i in sorted_idx]
+            self.showMLPFeatureImportances(feature_importances)
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Permutation Importance Error",
+                f"Failed to compute permutation importance:\n{e}"
+            )
+
+
     def setupMainTab(self):
         self.mainLayout = QVBoxLayout()
 
-        # 가이드 위젯 생성
+        # comment
         self.guideWidget = QWidget()
         guideLayout = QVBoxLayout(self.guideWidget)
 
@@ -768,20 +1127,20 @@ class MyApp(QMainWindow):
         guideLayout.addWidget(guideTitle)
 
         guideText = QLabel(
-            "이 프로그램은 머신러닝 초보자를 위한 GUI 툴입니다.\n\n"
-            "① CSV 파일을 불러옵니다. (각 열은 Feature(x값), Sample명, Label(y값) 값을 지닙니다.)\n"
-            "  label 값이 numerical 하지 않다면 임의의 숫자값을 배정합니다. ex) 0, 1, 2 \n"
-            "② Data Scaling을 진행합니다.\n"
-            "③ 데이터를 Train/Test 세트로 분할합니다.\n"
-            "④ 알고리즘(KNN, MLP, RF, SVM)을 선택해 모델을 학습합니다.\n"
-            "⑤ 모델을 저장하거나 Unknown Sample을 예측할 수 있습니다.\n"
-            "csv 파일의 형식은 하단의 예시 참조\n"
+            "This program is a GUI tool for beginners in machine learning.\n\n"
+            "① Load a CSV file. (Each column contains feature values (x), sample names, and label values (y).)\n"
+            "  If label values are not numeric, they will be mapped to arbitrary numbers (e.g., 0, 1, 2).\n"
+            "② Perform data scaling.\n"
+            "③ Split the data into Train/Test sets.\n"
+            "④ Choose an algorithm (KNN, MLP, RF, SVM) and train a model.\n"
+            "⑤ Save the model or predict unknown samples.\n"
+            "See the example at the bottom for the required CSV format.\n"
         )
         guideText.setAlignment(Qt.AlignLeft)
         guideText.setWordWrap(True)
         guideLayout.addWidget(guideText)
 
-        # 예시 CSV 표시
+        # comment
         sampleTable = QTableWidget()
         sampleTable.setRowCount(4)
         sampleTable.setColumnCount(6)
@@ -800,9 +1159,9 @@ class MyApp(QMainWindow):
 
         self.mainLayout.addWidget(self.guideWidget)
 
-        # 실제 CSV 로드 후 보여질 뷰어
+        # comment
         self.csvViewer = CsvViewer()
-        self.csvViewer.hide()  # 처음에는 숨김
+        self.csvViewer.hide()  # comment
         self.mainLayout.addWidget(self.csvViewer)
 
         self.mainTab.setLayout(self.mainLayout)
@@ -813,24 +1172,24 @@ class MyApp(QMainWindow):
         guide_layout = QVBoxLayout(guide_frame)
         guide_label = QLabel(
             "<h3>📊 Data Scaling Guide</h3>"
-            "<p>스케일링은 각 feature의 값 범위를 조정하여 모델 학습 성능을 높입니다.<br>"
-            "데이터 특성과 모델 종류에 따라 적절한 스케일러를 선택하세요.</p>"
+            "<p>Scaling adjusts the value ranges of features to improve model training performance.<br>"
+            "Choose an appropriate scaler depending on your data characteristics and model type.</p>"
             "<ul>"
-            "<li><b>StandardScaler</b>: 평균 0, 표준편차 1로 정규화. 대부분의 ML 모델에서 기본적으로 적합.<br>"
-            "‣ 장점: 정규분포 데이터에 효과적.<br>"
-            "‣ 단점: 이상치(outlier)에 민감.</li><br>"
-            "<li><b>MinMaxScaler</b>: [0, 1] 범위로 스케일링.<br>"
-            "‣ 장점: Neural Network 등에서 빠른 수렴 유도.<br>"
-            "‣ 단점: 이상치에 매우 민감.</li><br>"
-            "<li><b>RobustScaler</b>: 중앙값과 IQR(사분위 범위)을 기준으로 변환.<br>"
-            "‣ 장점: 이상치가 많은 데이터에 안정적.<br>"
-            "‣ 단점: 분포가 정규형에 가깝다면 오히려 precision 감소.</li><br>"
-            "<li><b>MaxAbsScaler</b>: 각 feature의 최대 절댓값을 1로 맞춤.<br>"
-            "‣ 장점: 희소 행렬(sparse data) 유지.<br>"
-            "‣ 단점: 음수/양수 비율이 큰 데이터에는 부적합.</li><br>"
-            "<li><b>Normalizer</b>: 각 샘플 벡터의 길이를 1로 맞춤.<br>"
-            "‣ 장점: 텍스트 벡터나 거리 기반 모델(KNN)에 적합.<br>"
-            "‣ 단점: 전체 feature 간 분포는 보정하지 않음.</li>"
+            "<li><b>StandardScaler</b>: Normalize to mean 0 and standard deviation 1. A common default for many ML models.<br>"
+            "‣ Pros: Effective for normally distributed data.<br>"
+            "‣ Cons: Sensitive to outliers.</li><br>"
+            "<li><b>MinMaxScaler</b>: Scale to the [0, 1] range.<br>"
+            "‣ Pros: Helps fast convergence for neural networks, etc.<br>"
+            "‣ Cons: Very sensitive to outliers.</li><br>"
+            "<li><b>RobustScaler</b>: Transform using the median and IQR (interquartile range).<br>"
+            "‣ Pros: Stable when there are many outliers.<br>"
+            "‣ Cons: If the distribution is close to normal, precision may decrease.</li><br>"
+            "<li><b>MaxAbsScaler</b>: Scale each feature by its maximum absolute value (so max abs becomes 1).<br>"
+            "‣ Pros: Preserves sparse matrices (sparse data).<br>"
+            "‣ Cons: Not suitable when positive/negative proportions vary widely.</li><br>"
+            "<li><b>Normalizer</b>: Scale each sample vector to length 1.<br>"
+            "‣ Pros: Good for text vectors or distance-based models (KNN).<br>"
+            "‣ Cons: Does not correct the distribution across features.</li>"
             "</ul>"
         )
         guide_label.setWordWrap(True)
@@ -840,7 +1199,7 @@ class MyApp(QMainWindow):
 
         layout.addWidget(guide_frame)
 
-        # 현재 스케일링 메서드 표시 라벨 추가
+        # comment
         self.scalerStatusLabel = QLabel("Current Scaling Method: None")
         self.scalerStatusLabel.setStyleSheet("font-weight: bold; color: darkgreen;")
         layout.addWidget(self.scalerStatusLabel)
@@ -853,7 +1212,7 @@ class MyApp(QMainWindow):
         layout = QVBoxLayout()
         desc_style = "color: #555; font-size: 10pt; margin-bottom: 4px;"
 
-        # 각 항목을 네모칸(QFrame)으로 묶는 함수
+        # comment
         def wrap_in_box(widget_list):
             frame = QFrame()
             frame.setFrameShape(QFrame.Box)
@@ -866,25 +1225,25 @@ class MyApp(QMainWindow):
             frame.setLayout(inner_layout)
             return frame
 
-        # 왼쪽 컬럼
+        # comment
         left_col = QVBoxLayout()
 
-        # Hidden Layer 설정
+        # comment
         hidden_layer_label = QLabel("Hidden Layer Size (comma separated):")
         self.hidden_layer_input = QLineEdit()
         self.hidden_layer_input.setPlaceholderText("50,50")
         self.hidden_layer_input.setFixedWidth(300)
         desc = QLabel(
-            "은닉층 구조를 지정합니다. <br>(예: 100,50,30 → 각각 뉴런 100개, 50개, 30개로 이루어진 3개의 은닉층). <br>뉴런과 층이 많을수록 복잡한 패턴을 학습하지만 과적합 위험이 있습니다.")
+            "Specify the hidden-layer architecture. <br>(e.g., 100,50,30 → three hidden layers with 100, 50, and 30 neurons). <br>More neurons/layers can learn complex patterns but increase overfitting risk.")
         desc.setStyleSheet(desc_style)
         left_col.addWidget(wrap_in_box([hidden_layer_label, self.hidden_layer_input, desc]))
 
-        # Alpha 설정
+        # comment
         alpha_label = QLabel("Alpha (Regularization strength):")
         self.alpha_input = QLineEdit()
         self.alpha_input.setPlaceholderText("0.0001")
         self.alpha_input.setFixedWidth(300)
-        desc = QLabel("가중치의 크기를 제한해 과적합을 방지합니다. <br>값이 클수록 모델이 단순해지고, 작을수록 복잡해집니다.")
+        desc = QLabel("Limits the magnitude of weights to prevent overfitting. <br>Larger values make the model simpler; smaller values make it more complex.")
         desc.setStyleSheet(desc_style)
         left_col.addWidget(wrap_in_box([alpha_label, self.alpha_input, desc]))
 
@@ -894,7 +1253,7 @@ class MyApp(QMainWindow):
         self.max_iter_input.setRange(1, 999999)
         self.max_iter_input.setValue(1000)
         self.max_iter_input.setFixedWidth(300)
-        desc = QLabel("최대 학습 반복 횟수입니다. 수렴하지 않을 경우 값을 높이세요.")
+        desc = QLabel("Maximum number of training iterations. Increase this if the model does not converge.")
         desc.setStyleSheet(desc_style)
         left_col.addWidget(wrap_in_box([max_iter_label, self.max_iter_input, desc]))
 
@@ -904,11 +1263,11 @@ class MyApp(QMainWindow):
         self.random_state_input.setRange(0, 999999)
         self.random_state_input.setValue(42)
         self.random_state_input.setFixedWidth(300)
-        desc = QLabel("무작위 초기화 시드를 고정합니다. 같은 결과를 재현하려면 같은 값을 유지하세요.")
+        desc = QLabel("Fix the random initialization seed. Keep the same value to reproduce results.")
         desc.setStyleSheet(desc_style)
         left_col.addWidget(wrap_in_box([random_state_label, self.random_state_input, desc]))
 
-        # 오른쪽 컬럼
+        # comment
         right_col = QVBoxLayout()
 
         # Solver
@@ -918,7 +1277,7 @@ class MyApp(QMainWindow):
         self.solver_input.setCurrentText('adam')
         self.solver_input.setFixedWidth(300)
         desc = QLabel(
-            "가중치 최적화 알고리즘입니다. <br>'adam': 안정적 <br>'lbfgs': 적은 데이터셋에 적합 <br> 'sgd': 대규모 데이터셋에 적합, 최적화 과정 조정 가능")
+            "Weight-optimization algorithm. <br>'adam': stable <br>'lbfgs': suitable for small datasets <br> 'sgd': suitable for large datasets; allows tuning the optimization process")
         desc.setStyleSheet(desc_style)
         right_col.addWidget(wrap_in_box([solver_label, self.solver_input, desc]))
 
@@ -929,7 +1288,7 @@ class MyApp(QMainWindow):
         self.activation_input.setCurrentText('relu')
         self.activation_input.setFixedWidth(300)
         desc = QLabel(
-            "활성화 함수는 뉴런의 출력 형태를 결정합니다. <br>'relu': 가장 일반적이고 안정적 <br> 'tanh': 높은 학습 안정성 <br> 'logistic':이진 분류 출력층 또는 작은 네트워크에서 사용 <br> 'identity': regression에 적합 ")
+            "The activation function determines the output of neurons. <br>'relu': most common and stable <br> 'tanh': stable learning <br> 'logistic': used for binary output layers or small networks <br")
         desc.setStyleSheet(desc_style)
         right_col.addWidget(wrap_in_box([activation_label, self.activation_input, desc]))
 
@@ -938,20 +1297,20 @@ class MyApp(QMainWindow):
         self.learning_rate_input = QLineEdit()
         self.learning_rate_input.setPlaceholderText("0.001")
         self.learning_rate_input.setFixedWidth(300)
-        desc = QLabel("가중치 업데이트 속도를 조절합니다. 너무 크면 불안정, 너무 작으면 학습이 느립니다.")
+        desc = QLabel("Controls the learning rate. Too large is unstable; too small slows learning.")
         desc.setStyleSheet(desc_style)
         right_col.addWidget(wrap_in_box([learning_rate_label, self.learning_rate_input, desc]))
-        # Font 설정 영역 (UI에 표시)
+        # comment
         font_box = QFrame()
         font_box.setFrameShape(QFrame.Box)
         font_box.setFrameShadow(QFrame.Sunken)
-        font_box.setFixedHeight(80)  # 전체 박스 높이 제한
+        font_box.setFixedHeight(80)  # comment
         font_layout = QVBoxLayout(font_box)
-        font_layout.setContentsMargins(4, 2, 4, 2)  # 여백 최소화
-        font_layout.setSpacing(1)  # 위젯 간격 최소화
+        font_layout.setContentsMargins(4, 2, 4, 2)  # comment
+        font_layout.setSpacing(1)  # comment
 
         font_label = QLabel("Font settings:")
-        font_label.setStyleSheet("font-size: 8pt; margin-bottom: 0px;")  # 폰트 작게
+        font_label.setStyleSheet("font-size: 8pt; margin-bottom: 0px;")  # comment
         font_layout.addWidget(font_label)
 
         font_row = QHBoxLayout()
@@ -979,7 +1338,7 @@ class MyApp(QMainWindow):
         font_layout.addLayout(font_row)
         layout.addWidget(font_box)
 
-        # 버튼 영역
+        # comment
         buttons_layout = QHBoxLayout()
         self.createMLPClassModelButton = QPushButton("Create MLP Classification Model")
         self.createMLPClassModelButton.setFont(QFont('Arial', 12, QFont.Bold))
@@ -995,7 +1354,15 @@ class MyApp(QMainWindow):
         self.createMLPRegModelButton.clicked.connect(self.createMLPRegressionModel)
         buttons_layout.addWidget(self.createMLPRegModelButton)
 
-        # 좌우 배치
+        self.mlpCvClassButton = QPushButton("5-Fold CV (MLP Classification)")
+        self.mlpCvClassButton.clicked.connect(self.runMLPClassificationCV)
+        buttons_layout.addWidget(self.mlpCvClassButton)
+
+        self.mlpCvRegButton = QPushButton("5-Fold CV (MLP Regression)")
+        self.mlpCvRegButton.clicked.connect(self.runMLPRegressionCV)
+        buttons_layout.addWidget(self.mlpCvRegButton)
+
+        # comment
         main_columns = QHBoxLayout()
         main_columns.addLayout(left_col)
         main_columns.addSpacing(20)
@@ -1023,7 +1390,7 @@ class MyApp(QMainWindow):
 
         feature_names = list(X_train_numeric.columns)
 
-        # split 단계에서 raw/scaled 결정났으니 여기서 추가 스케일링 금지
+        # comment
         X_train_used = X_train_numeric.values
         X_test_used = X_test_numeric.values
 
@@ -1082,7 +1449,7 @@ class MyApp(QMainWindow):
         feature_importances = [(feature_names[idx], perm_importance.importances_mean[idx]) for idx in sorted_idx]
         self.showMLPFeatureImportances(feature_importances)
 
-        # ✅ bundle 저장
+        # comment
         self.models["MLP Classification"] = {
             "model": mlp,
             "scaler": self._get_bundle_scaler(),
@@ -1149,7 +1516,7 @@ class MyApp(QMainWindow):
         feature_importances = [(feature_names[idx], perm_importance.importances_mean[idx]) for idx in sorted_idx]
         self.showMLPFeatureImportances(feature_importances)
 
-        # ✅ bundle 저장
+        # comment
         self.models["MLP Regression"] = {
             "model": mlp,
             "scaler": self._get_bundle_scaler(),
@@ -1161,21 +1528,18 @@ class MyApp(QMainWindow):
     def showMLPFeatureImportances(self, feature_importances):
         dialog = QDialog(self)
         dialog.setWindowTitle("Feature Importances")
-        dialog.setGeometry(100, 100, 600, 400)  # 창 크기를 조금 더 크게 설정
+        dialog.setGeometry(100, 100, 600, 400)  # comment
 
         dialog_layout = QVBoxLayout(dialog)
 
-        #info_label = QLabel(
-            #"Important Features\n\n"
-            #"MLP는 인공신경망 특유의 복잡성으로 일반적으로 어떤 특성이 예측에 중요한 역할을 하는지 명확하게 해석하기 어렵습니다.\n\n"
-            #"Ku Machine Learning은 permutation feature importance를 측정합니다.\n\n"
-            #"이는 features 중 하나만을 랜덤으로 섞어버렸을 때 모델의 정확도 점수가 얼마나 낮아지는가를 통해 계산하는 방식입니다.\n\n"
-            #"수치가 높을 수록 모델 생성에 더 큰 영향을 미쳤다고 할 수 있습니다. 마이너스 값은 모델 생성에 부정적인 영향을 주었을 가능성을 시사합니다.\n\n"
-            #"<a href=\"https://scikit-learn.org/stable/modules/permutation_importance.html#id2\">상세는 이하의 링크를 참고해주십시오.</a>"
-        #)
-        #info_label.setOpenExternalLinks(True)
-        #info_label.setWordWrap(True)  # 텍스트가 창 크기에 맞게 줄 바꿈 되도록 설정
-        #dialog_layout.addWidget(info_label)
+        info_label = QLabel(
+            "<b>How feature importance is computed</b><br>"
+            "MLP importance on this screen is computed using scikit-learn's <code>permutation_importance</code>.<br>"
+            "Importance is defined as how much model performance decreases when the values of a feature are randomly shuffled (performance drop).<br>"
+            "Larger values mean more important features; values near zero or negative may indicate little influence or noise."
+        )
+        info_label.setWordWrap(True)
+        dialog_layout.addWidget(info_label)
 
         table = QTableWidget(dialog)
         table.setRowCount(len(feature_importances))
@@ -1193,32 +1557,89 @@ class MyApp(QMainWindow):
         dialog.setWindowModality(Qt.NonModal)
         dialog.show()
 
+    # ------------------------------
+    # 5-fold CV runners (MLP)
+    # ------------------------------
+    def runMLPClassificationCV(self):
+        try:
+            hidden_layer_input_text = self.hidden_layer_input.text().strip()
+            hidden_layers = (50, 50) if not hidden_layer_input_text else tuple(map(int, hidden_layer_input_text.split(",")))
+
+            alpha_input_text = self.alpha_input.text().strip()
+            alpha = 0.0001 if not alpha_input_text else float(alpha_input_text)
+
+            lr_input_text = self.learning_rate_input.text().strip()
+            learning_rate = 0.001 if not lr_input_text else float(lr_input_text)
+
+            estimator = MLPClassifier(
+                hidden_layer_sizes=hidden_layers,
+                max_iter=int(self.max_iter_input.value()),
+                random_state=int(self.random_state_input.value()),
+                alpha=alpha,
+                solver=self.solver_input.currentText(),
+                activation=self.activation_input.currentText(),
+                learning_rate_init=learning_rate
+            )
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=ConvergenceWarning, module="sklearn")
+                self.run_5fold_cv(estimator, task="classification")
+        except Exception as e:
+            QMessageBox.warning(self, "CV Error", str(e))
+
+    def runMLPRegressionCV(self):
+        try:
+            hidden_layer_input_text = self.hidden_layer_input.text().strip()
+            hidden_layers = (50, 50) if not hidden_layer_input_text else tuple(map(int, hidden_layer_input_text.split(",")))
+
+            alpha_input_text = self.alpha_input.text().strip()
+            alpha = 0.0001 if not alpha_input_text else float(alpha_input_text)
+
+            lr_input_text = self.learning_rate_input.text().strip()
+            learning_rate = 0.001 if not lr_input_text else float(lr_input_text)
+
+            estimator = MLPRegressor(
+                hidden_layer_sizes=hidden_layers,
+                max_iter=int(self.max_iter_input.value()),
+                random_state=int(self.random_state_input.value()),
+                alpha=alpha,
+                solver=self.solver_input.currentText(),
+                activation=self.activation_input.currentText(),
+                learning_rate_init=learning_rate
+            )
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=ConvergenceWarning, module="sklearn")
+                self.run_5fold_cv(estimator, task="regression")
+        except Exception as e:
+            QMessageBox.warning(self, "CV Error", str(e))
+
     def setupRFTab(self):
         layout = QVBoxLayout()
 
         desc_style = "color: #555; font-size: 10pt; margin-bottom: 4px;"
 
-        # --- 상단: Random Forest 설명 추가 ---
+        # comment
         rf_overview = QLabel(
             "<h3>🌲 Random Forest (RF)</h3>"
-            "<p>Random Forest는 여러 개의 의사결정트리를 학습시켜 예측을 수행하는 앙상블 학습 기법입니다.<br>"
-            "과적합 위험이 낮고, 분류(Classification)와 회귀(Regression) 문제 모두에서 우수한 성능을 보입니다.</p>"
+            "<p>Random Forest is an ensemble method that trains many decision trees and aggregates their predictions.<br>"
+            "It tends to overfit less and performs well for both classification and regression.</p>"
         )
         rf_overview.setWordWrap(True)
         layout.addWidget(rf_overview)
 
-        # --- 파라미터 그룹박스 ---
+        # comment
         groupBox = QFrame()
         groupBox.setFrameShape(QFrame.Box)
         groupBox.setFrameShadow(QFrame.Sunken)
         groupBoxLayout = QVBoxLayout(groupBox)
 
         params = [
-            ("Max Depth:", 20, 1, 99999, "트리의 최대 깊이를 제한합니다.<br>값이 크면 모델이 복잡해지고, 작으면 단순해집니다."),
-            ("N Estimators:", 20, 1, 99999, "생성할 트리의 개수입니다.<br>많을수록 안정적인 결과를 얻지만 학습 시간이 길어집니다."),
-            ("Min Samples Leaf:", 1, 1, 99999, "각 리프 노드에 있어야 하는 최소 샘플 수입니다.<br>값이 크면 모델이 단순해지고 과적합이 줄어듭니다."),
-            ("Min Samples Split:", 2, 2, 99999, "노드를 분할하기 위한 최소 샘플 수입니다.<br>값이 크면 트리의 깊이가 줄어들어 단순한 모델이 됩니다."),
-            ("Random State:", 0, 0, 99999, "무작위성 제어를 위한 시드(seed) 값입니다.<br>같은 값을 사용하면 항상 동일한 결과를 재현할 수 있습니다.")
+            ("Max Depth:", 20, 1, 99999, "Limit the maximum depth of each tree.<br>Larger values make the model more complex; smaller values make it simpler."),
+            ("N Estimators:", 20, 1, 99999, "Number of trees to build.<br>More trees often give more stable results but increase training time."),
+            ("Min Samples Leaf:", 1, 1, 99999, "Minimum number of samples required at a leaf node.<br>Larger values simplify the model and reduce overfitting."),
+            ("Min Samples Split:", 2, 2, 99999, "Minimum number of samples required to split an internal node.<br>Larger values reduce tree depth and simplify the model."),
+            ("Random State:", 0, 0, 99999, "Seed value to control randomness.<br>Using the same value reproduces the same results.")
         ]
 
         self.param_inputs = {}
@@ -1249,7 +1670,7 @@ class MyApp(QMainWindow):
         groupBoxLayout.setSpacing(15)
         layout.addWidget(groupBox)
 
-        # --- 버튼 영역 ---
+        # comment
         buttons_layout = QHBoxLayout()
         self.createRFClassModelButton = QPushButton("Create RF Classification Model")
         self.createRFClassModelButton.setFont(QFont('Arial', 12, QFont.Bold))
@@ -1264,9 +1685,17 @@ class MyApp(QMainWindow):
             "QPushButton { padding: 10px; border-radius: 10px; border: 2px solid #000000; }")
         self.createRFRegModelButton.clicked.connect(self.createRFRegressionModel)
         buttons_layout.addWidget(self.createRFRegModelButton)
+
+        self.rfCvClassButton = QPushButton("5-Fold CV (RF Classification)")
+        self.rfCvClassButton.clicked.connect(self.runRFClassificationCV)
+        buttons_layout.addWidget(self.rfCvClassButton)
+
+        self.rfCvRegButton = QPushButton("5-Fold CV (RF Regression)")
+        self.rfCvRegButton.clicked.connect(self.runRFRegressionCV)
+        buttons_layout.addWidget(self.rfCvRegButton)
         layout.addLayout(buttons_layout)
 
-        # --- 오른쪽: 폰트 설정 ---
+        # comment
         right_side_layout = QVBoxLayout()
         right_side_layout.setAlignment(Qt.AlignTop)
 
@@ -1293,12 +1722,56 @@ class MyApp(QMainWindow):
 
         right_side_layout.addWidget(font_box)
 
-        # --- 전체 병합 ---
+        # comment
         main_layout = QHBoxLayout()
         main_layout.addLayout(layout)
         main_layout.addLayout(right_side_layout)
 
         self.RFTab.setLayout(main_layout)
+
+    # ------------------------------
+    # 5-fold CV runners (RF)
+    # ------------------------------
+    def runRFClassificationCV(self):
+        try:
+            # comment
+            max_depth = int(self.param_inputs["Max Depth:"].value())
+            n_estimators = int(self.param_inputs["N Estimators:"].value())
+            min_samples_leaf = int(self.param_inputs["Min Samples Leaf:"].value())
+            min_samples_split = int(self.param_inputs["Min Samples Split:"].value())
+            random_state = int(self.param_inputs["Random State:"].value())
+
+            estimator = RandomForestClassifier(
+                max_depth=max_depth,
+                n_estimators=n_estimators,
+                min_samples_leaf=min_samples_leaf,
+                min_samples_split=min_samples_split,
+                random_state=random_state,
+                n_jobs=-1
+            )
+            self.run_5fold_cv(estimator, task="classification")
+        except Exception as e:
+            QMessageBox.warning(self, "CV Error", str(e))
+
+    def runRFRegressionCV(self):
+        try:
+            max_depth = int(self.param_inputs["Max Depth:"].value())
+            n_estimators = int(self.param_inputs["N Estimators:"].value())
+            min_samples_leaf = int(self.param_inputs["Min Samples Leaf:"].value())
+            min_samples_split = int(self.param_inputs["Min Samples Split:"].value())
+            random_state = int(self.param_inputs["Random State:"].value())
+
+            estimator = RandomForestRegressor(
+                max_depth=max_depth,
+                n_estimators=n_estimators,
+                min_samples_leaf=min_samples_leaf,
+                min_samples_split=min_samples_split,
+                random_state=random_state,
+                n_jobs=-1
+            )
+            self.run_5fold_cv(estimator, task="regression")
+        except Exception as e:
+            QMessageBox.warning(self, "CV Error", str(e))
 
     def createRFClassificationModel(self):
         if not self.checkDataSplit():
@@ -1350,7 +1823,7 @@ class MyApp(QMainWindow):
         self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test,
                                      "RF Classification: Observed vs Predicted")
 
-        # ✅ bundle 저장
+        # comment
         self.models["RF Classification"] = {
             "model": rf_clf,
             "scaler": self._get_bundle_scaler(),
@@ -1398,7 +1871,7 @@ class MyApp(QMainWindow):
         self.showRFRegResults(r2_train, r2_test, mse_test, rmse_test, variable_importances)
         self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test, "RF Regression: Observed vs Predicted")
 
-        # ✅ bundle 저장
+        # comment
         self.models["RF Regression"] = {
             "model": rf_regr,
             "scaler": self._get_bundle_scaler(),
@@ -1420,6 +1893,11 @@ class MyApp(QMainWindow):
                                f"Test Set MSE: {mse_test:.3f}\n"
                                f"Test Set RMSE: {rmse_test:.3f}")
         dialog_layout.addWidget(results_label)
+
+        # Variable importance note
+        var_imp_info = QLabel('Variable importance is displayed directly from scikit-learn RandomForest\'s `feature_importances_`. It is computed based on how much each feature reduces node impurity on average across the forest (MDI, often called “Gini importance”). Larger values mean the model split more often/more strongly on that feature and it contributed more to predictions. ')
+        var_imp_info.setWordWrap(True)
+        dialog_layout.addWidget(var_imp_info)
 
         # Variable importances
         var_importance_label = QLabel("Variable Importances:")
@@ -1451,6 +1929,11 @@ class MyApp(QMainWindow):
                                f"Training Set R2 Score: {r2_train:.3f}\n"
                                f"Test Set R2 Score: {r2_test:.3f}\n")
         dialog_layout.addWidget(results_label)
+
+        # Variable importance note
+        var_imp_info = QLabel('Variable importance is displayed directly from scikit-learn RandomForest\'s `feature_importances_`. It is computed based on how much each feature reduces node impurity on average across the forest (MDI, often called “Gini importance”). Larger values mean the model split more often/more strongly on that feature and it contributed more to predictions. ')
+        var_imp_info.setWordWrap(True)
+        dialog_layout.addWidget(var_imp_info)
 
         # Confusion matrix table
         cm_table = QTableWidget(dialog)
@@ -1490,7 +1973,7 @@ class MyApp(QMainWindow):
     def setupPredictionTab(self):
         layout = QVBoxLayout()
 
-        # 상단 안내 문구
+        # comment
         title_label = QLabel("Prediction with Loaded Model")
         title_label.setFont(QFont("Arial", 16, QFont.Bold))
         title_label.setAlignment(Qt.AlignCenter)
@@ -1505,14 +1988,14 @@ class MyApp(QMainWindow):
         info_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(info_label)
 
-        # 모델 로드 버튼
+        # comment
         load_model_button = QPushButton("Load Saved Model")
         load_model_button.setFont(QFont('Arial', 12, QFont.Bold))
         load_model_button.setStyleSheet("QPushButton { padding: 8px; border-radius: 8px; border: 2px solid #000000; }")
         load_model_button.clicked.connect(self.loadPreviousModel)
         layout.addWidget(load_model_button)
 
-        # Unknown CSV 로드 버튼
+        # comment
         load_unknown_button = QPushButton("Load Unknown Data (CSV)")
         load_unknown_button.setFont(QFont('Arial', 12, QFont.Bold))
         load_unknown_button.setStyleSheet(
@@ -1520,11 +2003,11 @@ class MyApp(QMainWindow):
         load_unknown_button.clicked.connect(self.loadUnknownSample)
         layout.addWidget(load_unknown_button)
 
-        # 예측 결과 테이블
+        # comment
         self.prediction_table = QTableWidget()
         layout.addWidget(self.prediction_table)
 
-        # 상태 메시지
+        # comment
         self.prediction_status = QLabel("Ready for prediction.")
         self.prediction_status.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.prediction_status)
@@ -1541,9 +2024,9 @@ class MyApp(QMainWindow):
             return
 
         try:
-            # ① unknown CSV 로드
+            # comment
             self.unknown_data = pd.read_csv(filename)
-            # Sample 컬럼이 있으면 분리
+            # comment
             unknown_df = self.unknown_data.copy()
             if 'Sample' in unknown_df.columns:
                 sample_series = unknown_df['Sample']
@@ -1551,12 +2034,12 @@ class MyApp(QMainWindow):
             else:
                 sample_series = pd.Series([f"Sample {i + 1}" for i in range(len(unknown_df))])
 
-            # numeric 강제
+            # comment
             unknown_df = unknown_df.apply(pd.to_numeric, errors='coerce').fillna(0)
 
             data_to_scale = unknown_df
 
-            # ② 로드된 모델 확인
+            # comment
             if not hasattr(self, "loaded_bundle"):
                 QMessageBox.warning(self, "Error", "Please load a trained model first.")
                 return
@@ -1572,7 +2055,7 @@ class MyApp(QMainWindow):
                 QMessageBox.warning(self, "Error", "No model found in bundle.")
                 return
 
-            # ③ feature 순서 맞추기
+            # comment
             if feature_names is not None:
                 data_to_scale = data_to_scale.reindex(columns=feature_names)
                 if data_to_scale.isnull().any().any():
@@ -1580,14 +2063,14 @@ class MyApp(QMainWindow):
             else:
                 print("[Warning] Model has no saved feature names — predictions may be unreliable!")
 
-            # ④ 저장된 scaler 적용
+            # comment
             if scaler:
                 data_scaled = scaler.transform(data_to_scale)
                 data_scaled = pd.DataFrame(data_scaled, columns=data_to_scale.columns, index=data_to_scale.index)
             else:
                 data_scaled = data_to_scale
 
-            # ⑤ reducer 적용
+            # comment
             if reducer:
                 data_reduced = reducer.transform(data_scaled)
                 data_used = pd.DataFrame(
@@ -1616,27 +2099,27 @@ class MyApp(QMainWindow):
             print("scaler:", type(scaler).__name__ if scaler else None, "reducer:",
                   type(reducer).__name__ if reducer else None)
 
-            # 1) unknown 최종 입력(스케일/리듀서 적용 후)
+            # comment
             incoming = data_used.values if hasattr(data_used, "values") else np.asarray(data_used)
 
-            # 2) train도 "저장된 scaler/reducer"로 똑같이 전처리해서 비교
+            # comment
             X_train_df = pd.read_csv(resource_path("Temp/X_train.csv"))
 
-            # Sample 제거 + numeric 강제 + NaN 0
+            # comment
             X_train_df = X_train_df.drop(columns=["Sample"], errors="ignore")
             X_train_df = X_train_df.apply(pd.to_numeric, errors="coerce").fillna(0)
 
-            # feature 순서 맞추기(없으면 0채움됨)
+            # comment
             if feature_names is not None:
                 X_train_df = X_train_df.reindex(columns=feature_names).fillna(0)
 
-            # scaler 적용
+            # comment
             if scaler:
                 X_train_proc = scaler.transform(X_train_df)
             else:
                 X_train_proc = X_train_df.values
 
-            # reducer 적용
+            # comment
             if reducer:
                 X_train_proc = reducer.transform(X_train_proc)
 
@@ -1645,7 +2128,7 @@ class MyApp(QMainWindow):
             print("incoming shape:", incoming.shape)
             print("X_train_proc shape:", X_train_proc.shape)
 
-            # 3) 거리 계산: unknown 각 행이 train 중 어떤 행과 가장 가까운지
+            # comment
             d = np.linalg.norm(X_train_proc[None, :, :] - incoming[:, None, :], axis=2)
             min_d = d.min(axis=1)
             argmin = d.argmin(axis=1)
@@ -1653,21 +2136,21 @@ class MyApp(QMainWindow):
             print("min distance per unknown row:", min_d)
             print("closest train row index:", argmin)
 
-            # 4) 판정: 거의 0이면 동일로 간주
+            # comment
             tol = 1e-9
             same_mask = min_d <= tol
             print("same_mask (min_d<=1e-9):", same_mask)
             print("how many exactly same?:", same_mask.sum(), "/", len(same_mask))
 
-            # ⑥ 예측
+            # comment
             predictions = model.predict(data_used)
 
-            # ⑦ label 역매핑 적용 (문자형 복원)
+            # comment
             if label_mapping:
                 inverse_map = {v: k for k, v in label_mapping.items()}
                 predictions = [inverse_map.get(p, p) for p in predictions]
 
-            # ⑧ 결과 표시
+            # comment
             self.prediction_table.clear()
             self.prediction_table.setColumnCount(2)
             self.prediction_table.setHorizontalHeaderLabels(["Sample", "Prediction"])
@@ -1746,7 +2229,7 @@ class MyApp(QMainWindow):
             for j, cell in enumerate(row):
                 self.unknownTable.setItem(i, j, QTableWidgetItem(str(cell)))
 
-    # applyModelReducer (feature 이름 기준 align)
+    # comment
     # ============================================================
     def applyModelReducer(self):
         try:
@@ -1754,7 +2237,7 @@ class MyApp(QMainWindow):
                 QMessageBox.warning(self, "Data Error", "Please scale the unknown data first.")
                 return
 
-            # 현재 선택된 모델 이름 확인
+            # comment
             selected_models = [name for name, checkbox in self.modelCheckBoxes.items() if checkbox.isChecked()]
             if not selected_models:
                 QMessageBox.warning(self, "Model Selection Error", "Please select at least one model.")
@@ -1766,7 +2249,7 @@ class MyApp(QMainWindow):
                 QMessageBox.warning(self, "Reducer Error", f"No reducer found for '{model_name}'.")
                 return
 
-            # feature 이름 기준 align
+            # comment
             unknown_df = pd.DataFrame(self.scaled_unknown_data, columns=self.unknown_data.columns)
             if hasattr(self, 'feature_names'):
                 missing = set(self.feature_names) - set(unknown_df.columns)
@@ -1774,7 +2257,7 @@ class MyApp(QMainWindow):
                     QMessageBox.warning(self, "Feature Mismatch",
                                         f"The following features are missing in unknown data:\n{', '.join(missing)}")
                     return
-                # feature 이름 기준 재정렬
+                # comment
                 unknown_df = unknown_df.loc[:, self.feature_names]
 
             reduced = reducer.transform(unknown_df)
@@ -1798,7 +2281,7 @@ class MyApp(QMainWindow):
 
     def predictModel(self):
         """
-        예측 시 feature 이름 기반으로 align하여 reducer 및 model 예측 수행
+        During prediction, align by feature names and then run reducer/model prediction
         """
         if not hasattr(self, 'unknown_data'):
             QMessageBox.warning(self, "Data Error", "Please load unknown sample CSV first.")
@@ -1813,7 +2296,7 @@ class MyApp(QMainWindow):
             QMessageBox.warning(self, "Model Selection Error", "Please select at least one trained model.")
             return
 
-        # feature 이름 기준 align
+        # comment
         unknown_df = pd.DataFrame(self.scaled_unknown_data, columns=self.unknown_data.columns)
         if hasattr(self, 'feature_names'):
             missing = set(self.feature_names) - set(unknown_df.columns)
@@ -1825,7 +2308,7 @@ class MyApp(QMainWindow):
 
         data_used = unknown_df.values
 
-        # reducer 자동 적용
+        # comment
         try:
             valid_models = ["KNN Classification", "KNN Regression", "SV Classification", "SV Regression"]
             valid_selected_model = next((m for m in selected_models if m in valid_models), None)
@@ -1841,7 +2324,7 @@ class MyApp(QMainWindow):
             print(f"[Reducer Auto-Apply Error] {e}")
             QMessageBox.warning(self, "Reducer Error", f"Reducer could not be applied:\n{e}")
 
-        # 예측 실행
+        # comment
         predictions = {}
         for model_name in selected_models:
             model = self.models.get(model_name)
@@ -1855,7 +2338,7 @@ class MyApp(QMainWindow):
                 QMessageBox.warning(self, "Prediction Error", f"Error predicting with '{model_name}':\n{e}")
                 continue
 
-        # 결과 표시 (UI 유지)
+        # comment
         sample_names = self.get_sample_names_from_unknown_data()
         if predictions:
             self.showPredictions(predictions, sample_names)
@@ -1905,13 +2388,13 @@ class MyApp(QMainWindow):
         scatter_train = ax.scatter(y_train, y_pred_train, c='blue', label='Training Set', marker='o', s=50, alpha=0.3)
         scatter_test = ax.scatter(y_test, y_pred_test, c='red', label='Test Set', marker='x', s=100, alpha=0.7)
 
-        # x축, y축 이름 설정
+        # comment
         x_label = 'Observed'
         y_label = 'Predicted'
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
 
-        # Figure 제목 설정
+        # comment
         title = 'MLP Predicted vs. Observed'
         ax.set_title(title)
 
@@ -1962,28 +2445,28 @@ class MyApp(QMainWindow):
         guide_layout = QVBoxLayout(guide_frame)
 
         guide_label = QLabel(
-            "<h3>🧮 KNN (K-Nearest Neighbors) 모델 </h3>"
-            "<p>KNN은 새로운 데이터 포인트가 주어졌을 때, "
-            "기존 데이터 중 가장 가까운 K개의 이웃을 찾아 "
-            "그들의 다수결(분류) 또는 평균(회귀)에 따라 예측하는 방법입니다.<br>"
-            "모델이 데이터를 학습하지 않고, 예측 시점에 거리를 계산해 결과를 도출하는 "
-            "‘Lazy Learning’ 방식입니다.</p>"
+            "<h3>🧮 KNN (K-Nearest Neighbors) Model </h3>"
+            "<p>When a new data point is given, KNN "
+            "finds the K nearest neighbors in the existing data and "
+            "predicts by majority vote (classification) or average (regression).<br>"
+            "It does not explicitly learn parameters; instead it computes distances at prediction time, "
+            "so it is often called a 'lazy learning' method.</p>"
         )
         guide_label.setWordWrap(True)
         guide_layout.addWidget(guide_label)
 
         dimreduce_label = QLabel(
-            "<h4>📉 차원 축소(Dimensionality Reduction) 기법 비교</h4>"
+            "<h4>📉 Comparison of dimensionality reduction methods</h4>"
             "<ul>"
-            "<li><b>PCA (Principal Component Analysis)</b>: <i>비지도 학습</i> 기반. "
-            "데이터의 분산이 가장 큰 방향으로 축을 재정의하여 차원을 축소합니다.<br>"
-            "‣ 데이터의 클래스 정보를 사용하지 않으며, 시각화나 노이즈 제거에 유용합니다.</li><br>"
-            "<li><b>LDA (Linear Discriminant Analysis)</b>: <i>지도 학습</i> 기반. "
-            "클래스 간 분리를 극대화하는 축을 찾아 차원을 축소합니다.<br>"
-            "‣ 레이블이 있는 분류 문제에서 클래스 간 경계를 더 명확하게 시각화할 수 있습니다.</li><br>"
-            "<li><b>NCA (Neighborhood Components Analysis)</b>: <i>지도 학습</i> 기반. "
-            "KNN의 분류 성능을 최대화하도록 feature 공간을 학습합니다.<br>"
-            "‣ LDA보다 유연하며, 비선형적 데이터 관계에서도 더 높은 성능을 낼 수 있습니다.</li>"
+            "<li><b>PCA (Principal Component Analysis)</b>: Based on unsupervised learning. "
+            "It reduces dimensions by redefining axes along directions with the largest variance.<br>"
+            "‣ It does not use class labels and is useful for visualization or noise reduction.</li><br>"
+            "<li><b>LDA (Linear Discriminant Analysis)</b>: Based on supervised learning. "
+            "It reduces dimensions by finding axes that maximize separation between classes.<br>"
+            "‣ In labeled classification problems, it can visualize class boundaries more clearly.</li><br>"
+            "<li><b>NCA (Neighborhood Components Analysis)</b>: Based on supervised learning. "
+            "It learns the feature space to maximize KNN classification performance.<br>"
+            "‣ It is more flexible than LDA and can perform better even with nonlinear relationships.</li>"
             "</ul>"
         )
         dimreduce_label.setWordWrap(True)
@@ -2062,6 +2545,15 @@ class MyApp(QMainWindow):
         self.createRegModelButton.clicked.connect(self.createRegressionModel)
         buttons_layout.addWidget(self.createRegModelButton)
 
+        # 5-fold CV buttons
+        self.knnCvClassButton = QPushButton("5-Fold CV (Classification)")
+        self.knnCvClassButton.clicked.connect(self.runKnnClassificationCV)
+        buttons_layout.addWidget(self.knnCvClassButton)
+
+        self.knnCvRegButton = QPushButton("5-Fold CV (Regression)")
+        self.knnCvRegButton.clicked.connect(self.runKnnRegressionCV)
+        buttons_layout.addWidget(self.knnCvRegButton)
+
         layout.addLayout(buttons_layout)
 
         # Right side layout for font settings and legend settings
@@ -2130,6 +2622,126 @@ class MyApp(QMainWindow):
             return False
         return True
 
+    # ------------------------------
+    # 5-fold CV runners (KNN)
+    # ------------------------------
+    def showKNNPermutationImportance(self, reducer, X_eval, y_eval, model, feature_names, title_prefix="KNN", task="classification"):
+        """KNN does not provide feature importance via internal parameters,
+        so importance is computed and displayed using permutation importance (score drop when a feature is shuffled).
+
+        - X_eval is expected to be in the original feature space.
+        """
+        try:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Feature Importance")
+            msg.setText(
+                f"{title_prefix} does not compute feature importance directly from internal model values.\n\n"
+                "Feature importance can be computed and displayed using permutation importance.\n"
+                "(Importance is computed as how much the performance score drops when the feature is shuffled)"
+            )
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            if msg.exec_() != QMessageBox.Ok:
+                return
+
+            scoring = "accuracy" if task == "classification" else "r2"
+
+            class _ReducerWrappedEstimator:
+                def __init__(self, reducer, model):
+                    self.reducer = reducer
+                    self.model = model
+
+                def fit(self, X, y=None):
+                    return self
+
+                def predict(self, X):
+                    X_in = X
+                    if isinstance(X_in, pd.DataFrame):
+                        X_in = X_in.values
+                    if self.reducer is not None:
+                        X_in = self.reducer.transform(X_in)
+                    return self.model.predict(X_in)
+
+                def score(self, X, y):
+                    y_pred = self.predict(X)
+                    if task == "classification":
+                        return accuracy_score(y, y_pred)
+                    return r2_score(y, y_pred)
+
+            est = _ReducerWrappedEstimator(reducer, model)
+
+            X_use = X_eval.copy()
+            y_use = np.array(y_eval)
+            max_n = 2000
+            if len(X_use) > max_n:
+                rng = np.random.RandomState(42)
+                idx = rng.choice(len(X_use), size=max_n, replace=False)
+                if isinstance(X_use, pd.DataFrame):
+                    X_use = X_use.iloc[idx]
+                else:
+                    X_use = X_use[idx]
+                y_use = y_use[idx]
+
+            result = permutation_importance(
+                est, X_use, y_use,
+                n_repeats=5,
+                random_state=42,
+                scoring=scoring
+            )
+
+            importances_mean = result.importances_mean
+            names = list(feature_names)
+            if len(names) != len(importances_mean):
+                names = [f"X{i}" for i in range(len(importances_mean))]
+
+            order = np.argsort(importances_mean)[::-1]
+            sorted_names = [names[i] for i in order]
+            sorted_vals = [importances_mean[i] for i in order]
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Feature Importances")
+            layout = QVBoxLayout(dialog)
+
+            info = QLabel(
+                f"{title_prefix} feature importance was computed using permutation importance.\n"
+                "Importance is computed based on how much the performance score decreases when each feature is shuffled."
+            )
+            info.setWordWrap(True)
+            layout.addWidget(info)
+
+            table = QTableWidget(dialog)
+            table.setRowCount(len(sorted_names))
+            table.setColumnCount(2)
+            table.setHorizontalHeaderLabels(["Feature", "Importance"])
+            for i, (fname, val) in enumerate(zip(sorted_names, sorted_vals)):
+                table.setItem(i, 0, QTableWidgetItem(str(fname)))
+                table.setItem(i, 1, QTableWidgetItem(f"{val:.6f}"))
+            table.resizeColumnsToContents()
+            layout.addWidget(table)
+
+            dialog.setLayout(layout)
+            dialog.setWindowModality(Qt.NonModal)
+            dialog.show()
+
+        except Exception as e:
+            QMessageBox.warning(self, "Permutation Importance Error", f"Failed to compute permutation importance:\n{e}")
+
+    def runKnnClassificationCV(self):
+        try:
+            n_neighbors = self.n_neighbors_input.value()
+            knn = KNeighborsClassifier(n_neighbors=n_neighbors)
+            self.run_5fold_cv(knn, task="classification")
+        except Exception as e:
+            QMessageBox.warning(self, "CV Error", str(e))
+
+    def runKnnRegressionCV(self):
+        try:
+            n_neighbors = self.n_neighbors_input.value()
+            knn = KNeighborsRegressor(n_neighbors=n_neighbors)
+            self.run_5fold_cv(knn, task="regression")
+        except Exception as e:
+            QMessageBox.warning(self, "CV Error", str(e))
+
     def createClassificationModel(self):
         if not self.checkDataSplit():
             return
@@ -2150,12 +2762,17 @@ class MyApp(QMainWindow):
             return
 
         method_name, reducer = selected_method
-        reducer.fit(X_train_numeric, y_train)
-        X_train_embedded = reducer.transform(X_train_numeric)
-        X_test_embedded = reducer.transform(X_test_numeric)
+        reducer.fit(X_train_numeric.values, y_train)
+        X_train_embedded = reducer.transform(X_train_numeric.values)
+        X_test_embedded = reducer.transform(X_test_numeric.values)
 
         knn.fit(X_train_embedded, y_train)
         accuracy = knn.score(X_test_embedded, y_test)
+        self.plotResults(method_name,
+                         X_train_embedded, y_train,
+                         X_test_embedded, y_test,
+                         n_neighbors,
+                         score_value=accuracy, score_label="Test accuracy")
 
         y_pred_test = knn.predict(X_test_embedded)
         cm = confusion_matrix(y_test, y_pred_test)
@@ -2170,17 +2787,19 @@ class MyApp(QMainWindow):
         cm_df = pd.DataFrame(cm, index=true, columns=pred)
         cm_df['Prediction Accuracy (%)'] = precision
 
-        self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, accuracy)
+        # (Removed) Duplicate scatter plot call
         self.showConfusionMatrix(cm_df)
-        # ✅ bundle 저장 (Save Model / Load Previous Model / Unknown prediction 통일)
+        # comment
         feature_names = list(X_train_numeric.columns)
+        self.showKNNPermutationImportance(reducer, X_test_numeric, y_test, knn, feature_names, title_prefix="KNN Classification", task="classification")
+
 
         self.models["KNN Classification"] = {
             "model": knn,
-            "scaler": self._get_bundle_scaler(),  # split이 scaled였을 때만 scaler 저장
+            "scaler": self._get_bundle_scaler(),  # comment
             "reducer": reducer,  # PCA/LDA/NCA
-            "feature_names": feature_names,  # feature 순서 고정
-            "label_mapping": self._get_label_mapping()  # 문자열 라벨 복원용(있을 때만)
+            "feature_names": feature_names,  # comment
+            "label_mapping": self._get_label_mapping()  # comment
         }
 
         if reducer:
@@ -2206,31 +2825,49 @@ class MyApp(QMainWindow):
             return
 
         method_name, reducer = selected_method
-        reducer.fit(X_train_numeric, y_train)
-        X_train_embedded = reducer.transform(X_train_numeric)
-        X_test_embedded = reducer.transform(X_test_numeric)
+        reducer.fit(X_train_numeric.values, y_train)
+        X_train_embedded = reducer.transform(X_train_numeric.values)
+        X_test_embedded = reducer.transform(X_test_numeric.values)
 
         knn.fit(X_train_embedded, y_train)
-        accuracy = knn.score(X_test_embedded, y_test)
 
-        self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, accuracy)
-        # ✅ bundle 저장 (Save Model / Load Previous Model / Unknown prediction 통일)
+
+        y_pred_train = knn.predict(X_train_embedded)
+        y_pred_test = knn.predict(X_test_embedded)
+        r2_train = r2_score(y_train, y_pred_train)
+        r2_test = r2_score(y_test, y_pred_test)
+        self.plotResults(method_name,
+                         X_train_embedded, y_train,
+                         X_test_embedded, y_test,
+                         n_neighbors,
+                         score_value=r2_test, score_label="Test R2")
+
+        self.plotObservedVsPredicted(
+            y_train, y_pred_train,
+            y_test, y_pred_test,
+            f"KNN Regression Observed vs Predicted\nTrain R2={r2_train:.3f}, Test R2={r2_test:.3f}"
+        )
+
+        # comment
         feature_names = list(X_train_numeric.columns)
+        self.showKNNPermutationImportance(reducer, X_test_numeric, y_test, knn, feature_names, title_prefix="KNN Regression", task="regression")
+
 
         self.models["KNN Regression"] = {
             "model": knn,
-            "scaler": self._get_bundle_scaler(),  # split이 scaled였을 때만 scaler 저장
-            "reducer": reducer,  # PCA/LDA/NCA (None이면 그대로)
+            "scaler": self._get_bundle_scaler(),  # comment
+            "reducer": reducer,  # comment
             "feature_names": feature_names,
-            "label_mapping": None  # 회귀는 라벨 매핑 불필요
+            "label_mapping": None  # comment
         }
 
         if reducer:
             self.model_reducers["KNN Regression"] = reducer
 
-    def plotResults(self, name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, accuracy):
+    def plotResults(self, name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors,
+                    score_value=None, score_label=None):
 
-        plt.figure() #KNN 2차원 result scatter plot
+        plt.figure() #comment
         unique_labels_train = np.unique(y_train)
         unique_labels_test = np.unique(y_test)
         label_colors = {
@@ -2238,7 +2875,8 @@ class MyApp(QMainWindow):
                 random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
             for label in np.unique(np.concatenate((y_train, y_test)))}
 
-        legend_name = self.legendNameInput.text() if self.legendNameInput.text() else "Label"
+        legend_widget = getattr(self, "legendNameInput", None)
+        legend_name = legend_widget.text() if (legend_widget is not None and legend_widget.text()) else "Label"
 
         for label in np.unique(np.concatenate((y_train, y_test))):
             train_indices = np.where(y_train == label)[0]
@@ -2257,80 +2895,83 @@ class MyApp(QMainWindow):
 
         legend = plt.legend()
         legend.set_draggable(True)
-        plt.title(f"{name} - KNN (k={n_neighbors})\nTest accuracy = {accuracy:.3f}",
-                  fontsize=self.fontSizeInput.value(), fontname=self.fontTypeComboBox.currentText())
+        title = f"{name} - KNN (k={n_neighbors})"
+        if score_value is not None and score_label is not None:
+            title += f"\n{score_label} = {score_value:.3f}"
+
+        plt.title(title,
+                  fontsize=self.fontSizeInput.value(),
+                  fontname=self.fontTypeComboBox.currentText())
+
         plt.xlabel("Component 1", fontsize=self.fontSizeInput.value(), fontname=self.fontTypeComboBox.currentText())
         plt.ylabel("Component 2", fontsize=self.fontSizeInput.value(), fontname=self.fontTypeComboBox.currentText())
         plt.show()
 
-        self.plotObservedVsPredicted(y_test, y_test, y_test, y_test, "KNN Observed vs Predicted")
 
     def plotObservedVsPredicted(self, y_train, y_pred_train, y_test, y_pred_test, title):
         if hasattr(self, 'observed_vs_predicted_dialog'):
             self.observed_vs_predicted_dialog.close()
-        # 폰트 설정
+        # comment
         plt.rcParams['font.size'] = self.fontSizeInput.value()
         plt.rcParams['font.family'] = self.fontTypeComboBox.currentText()
 
-        # 새로운 Figure 객체 생성
+        # comment
         fig, ax = plt.subplots(figsize=(10, 8))
 
-        # 훈련 세트와 테스트 세트의 산점도
+        # comment
         scatter_train = ax.scatter(y_train, y_pred_train, c='blue', label='Training Set', marker='o', s=50, alpha=0.3)
         scatter_test = ax.scatter(y_test, y_pred_test, c='red', label='Test Set', marker='x', s=100, alpha=0.7)
 
-        # 축 레이블과 제목 설정
+        # comment
         ax.set_xlabel('Observed')
         ax.set_ylabel('Predicted')
         ax.set_title(title)
 
-        # 범례 추가 및 드래그 가능하게 설정
+        # comment
         legend = ax.legend()
         legend.set_draggable(True)
 
-        # 45도 선 추가
+        # comment
         ax.plot([min(y_train.min(), y_test.min()), max(y_train.max(), y_test.max())],
                 [min(y_train.min(), y_test.min()), max(y_train.max(), y_test.max())],
                 'k--', label='45-degree line')
 
-        # R^2, MSE, RMSE 정보 추가
+        # comment
         ax.text(0.05, 0.95,
                 f'Training R2: {r2_score(y_train, y_pred_train):.3f}\nTest R2: {r2_score(y_test, y_pred_test):.3f}\nMSE: {mean_squared_error(y_test, y_pred_test):.3f}\nRMSE: {np.sqrt(mean_squared_error(y_test, y_pred_test)):.3f}',
                 transform=ax.transAxes, fontsize=12, verticalalignment='top')
 
-        # FigureCanvas 객체 생성 및 저장
+        # comment
         figure_canvas = FigureCanvas(fig)
-        self.figure_canvas = figure_canvas  # figure_canvas를 인스턴스 속성으로 저장
+        self.figure_canvas = figure_canvas  # comment
 
-        # 다이얼로그 생성하여 플롯 표시
+        # comment
         dialog = QDialog(self)
         dialog.setWindowTitle("Observed vs Predicted")
         dialog.setGeometry(100, 100, 800, 600)
 
         dialog_layout = QVBoxLayout(dialog)
-        # 네비게이션 툴바 추가
+        # comment
         toolbar = NavigationToolbar(figure_canvas, dialog)
         dialog_layout.addWidget(toolbar)
-        # FigureCanvas를 다이얼로그 레이아웃에 추가
+        # comment
         dialog_layout.addWidget(figure_canvas)
-
-
 
         dialog.setLayout(dialog_layout)
         dialog.setWindowModality(Qt.NonModal)
         dialog.show()
-        # 다이얼로그를 인스턴스 속성으로 저장 (다음번에 닫기 위해)
+        # comment
         self.observed_vs_predicted_dialog = dialog
 
-        # matplotlib의 현재 플롯을 닫아 중복 표시 방지
+        # comment
         plt.close(fig)
 
     def getSelectedDimReductionMethod(self):
-        if self.pcaCheckBox.isChecked():
+        if hasattr(self, "pcaCheckBox") and self.pcaCheckBox.isChecked():
             return "PCA", PCA(n_components=2)
-        elif self.ldaCheckBox.isChecked():
+        elif hasattr(self, "ldaCheckBox") and self.ldaCheckBox.isChecked():
             return "LDA", LDA(n_components=2)
-        elif self.ncaCheckBox.isChecked():
+        elif hasattr(self, "ncaCheckBox") and self.ncaCheckBox.isChecked():
             return "NCA", NCA(n_components=2, max_iter=100, tol=1e-5, random_state=42)
         return None
 
@@ -2364,6 +3005,276 @@ class MyApp(QMainWindow):
         self.randomSelectOptions.setVisible(
             self.rawDataRadioButton.isChecked() or self.scaledDataRadioButton.isChecked())
 
+    # ------------------------------
+    # 5-fold Cross-Validation helpers (k is fixed to 5)
+    # ------------------------------
+
+    def _require_data_split_ready(self):
+        """Return True if CSV is loaded and Data Split tab has been initialized."""
+        if not hasattr(self, "rawDataRadioButton") or not hasattr(self, "scaledDataRadioButton"):
+            QMessageBox.information(
+                self,
+                "CV Notice",
+                "Please load a CSV data file first and then perform Data Split."
+            )
+            return False
+        return True
+
+    def _refresh_cv_group_columns(self):
+        """Populate GroupKFold group-column dropdown from the currently loaded dataset."""
+        if not hasattr(self, "cvGroupColumnCombo"):
+            return
+
+        self.cvGroupColumnCombo.clear()
+        df = getattr(self.csvViewer, "original_data", None)
+        if df is None:
+            return
+        # show all columns (including Sample/Label if present). user can pick an ID-like column
+        self.cvGroupColumnCombo.addItems(list(df.columns))
+
+    def _update_cv_strategy_ui(self):
+        if not hasattr(self, "cvSplitStrategyCombo"):
+            return
+
+        strategy = self.cvSplitStrategyCombo.currentText()
+        desc_map = {
+            "StratifiedKFold (classification)": (
+                "This is the most commonly used 5-fold strategy for classification.\n"
+                "Each fold is split so that class proportions stay as similar as possible (useful for imbalanced data)."
+            ),
+            "KFold (general)": (
+                "This is the most basic 5-fold strategy.\n"
+                "It splits evenly without considering label proportions (or with shuffling, depending on settings)."
+            ),
+            "GroupKFold (grouped samples)": (
+                "If samples from the same entity (patient/user/sample ID) appear in both train and validation, leakage can occur.\n"
+                "GroupKFold keeps the same group within a single fold only. (e.g., patient_id)"
+            ),
+            "TimeSeriesSplit (time order)": (
+                "This 5-fold strategy is for time-series / time-ordered data.\n"
+                "It trains on the past and validates on the future, and does not use shuffling."
+            ),
+        }
+
+        self.cvSplitStrategyDesc.setText(desc_map.get(strategy, ""))
+
+        is_group = strategy.startswith("GroupKFold")
+        self.cvGroupColumnLabel.setVisible(is_group)
+        self.cvGroupColumnCombo.setVisible(is_group)
+
+    def _get_cv_splitter(self, y, n_splits=5):
+        """Return (splitter, groups_or_None)."""
+        strategy = getattr(self, "cvSplitStrategyCombo", None)
+        strategy = strategy.currentText() if strategy else "StratifiedKFold (classification)"
+
+        if strategy.startswith("StratifiedKFold"):
+            splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            return splitter, None
+        if strategy.startswith("KFold"):
+            splitter = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+            return splitter, None
+        if strategy.startswith("TimeSeriesSplit"):
+            splitter = TimeSeriesSplit(n_splits=n_splits)
+            return splitter, None
+        if strategy.startswith("GroupKFold"):
+            splitter = GroupKFold(n_splits=n_splits)
+            group_col = self.cvGroupColumnCombo.currentText() if hasattr(self, "cvGroupColumnCombo") else None
+            df = getattr(self.csvViewer, "original_data", None)
+            if df is None or not group_col or group_col not in df.columns:
+                raise ValueError("GroupKFold requires a valid group column. Please load data and select a group column.")
+            groups = df[group_col].values
+            return splitter, groups
+
+        # fallback
+        splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        return splitter, None
+
+    def _get_cv_X_y(self):
+        """Load X/y used for CV from Temp (raw or scaled X, and scaled_y)."""
+        if not self._require_data_split_ready():
+            return None, None
+        if self.rawDataRadioButton.isChecked():
+            X_file = resource_path("Temp/original_X.csv")
+        else:
+            X_file = resource_path("Temp/scaled_X.csv")
+
+        if not os.path.exists(X_file):
+            raise FileNotFoundError(f"{X_file} does not exist. Please load data (and scale if needed) first.")
+
+        X = pd.read_csv(X_file)
+        y_df = pd.read_csv(resource_path("Temp/scaled_y.csv"))
+        y = y_df.values.ravel()
+
+        X_numeric = self._drop_sample_and_numeric(X).fillna(0)
+        return X_numeric, y
+
+    def _format_mean_std(self, arr, digits=3):
+        arr = np.asarray(arr, dtype=float)
+        if arr.size == 0:
+            return "N/A"
+        return f"{arr.mean():.{digits}f} ± {arr.std(ddof=1):.{digits}f}"
+
+    def run_5fold_cv(self, estimator, task="classification"):
+        """Run 5-fold CV with the selected split strategy and show a results dialog."""
+        X, y = self._get_cv_X_y()
+        if X is None or y is None:
+            return
+        splitter, groups = self._get_cv_splitter(y, n_splits=5)
+        if splitter is None:
+            return
+
+        fold_scores = {"accuracy": [], "f1": [], "roc_auc": [], "r2": [], "rmse": []}
+
+        # Determine multi-class
+        unique_y = np.unique(y)
+        is_multiclass = len(unique_y) > 2
+
+        for fold_idx, (train_idx, test_idx) in enumerate(splitter.split(X, y, groups=groups) if groups is not None else splitter.split(X, y), start=1):
+            X_train_df = X.iloc[train_idx]
+            X_test_df = X.iloc[test_idx]
+            y_train = y[train_idx]
+            y_test = y[test_idx]
+
+            # Reducer is fit inside each fold (if selected)
+            selected = self.getSelectedDimReductionMethod()
+            reducer = None
+            if selected:
+                _, reducer = selected
+
+            if reducer is not None:
+                reducer.fit(X_train_df.values, y_train)
+                X_train_used = reducer.transform(X_train_df.values)
+                X_test_used = reducer.transform(X_test_df.values)
+            else:
+                X_train_used = X_train_df.values
+                X_test_used = X_test_df.values
+
+            model = clone(estimator)
+            model.fit(X_train_used, y_train)
+
+            if task == "regression":
+                y_pred = model.predict(X_test_used)
+                r2 = r2_score(y_test, y_pred)
+                rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
+                fold_scores["r2"].append(r2)
+                fold_scores["rmse"].append(rmse)
+                continue
+
+            # classification
+            y_pred = model.predict(X_test_used)
+            fold_scores["accuracy"].append(accuracy_score(y_test, y_pred))
+
+            # F1
+            avg = "macro" if is_multiclass else "binary"
+            try:
+                fold_scores["f1"].append(f1_score(y_test, y_pred, average=avg))
+            except Exception:
+                fold_scores["f1"].append(np.nan)            # ROC-AUC (optional)
+            auc_val = np.nan
+            try:
+                # Get score/probability outputs
+                if hasattr(model, "predict_proba"):
+                    y_score = model.predict_proba(X_test_used)
+                elif hasattr(model, "decision_function"):
+                    y_score = model.decision_function(X_test_used)
+                else:
+                    y_score = None
+
+                if y_score is not None:
+                    all_classes = np.unique(y)  # classes from full dataset
+                    if is_multiclass:
+                        # Robust multiclass AUC: compute OvR AUC per class when possible and average.
+                        from sklearn.preprocessing import label_binarize
+                        y_bin = label_binarize(y_test, classes=all_classes)
+
+                        # Ensure y_score is 2D with class-wise columns
+                        if isinstance(y_score, np.ndarray) and y_score.ndim == 1:
+                            # If a 1D score is returned in multiclass, AUC is not defined.
+                            auc_val = np.nan
+                        else:
+                            y_score_mat = np.asarray(y_score)
+
+                            # If columns mismatch, try to align when model exposes classes_
+                            if hasattr(model, "classes_") and y_score_mat.ndim == 2:
+                                model_classes = np.asarray(model.classes_)
+                                # Map model output columns to all_classes
+                                col_map = {c: i for i, c in enumerate(model_classes)}
+                                aligned = np.full((y_score_mat.shape[0], len(all_classes)), np.nan, dtype=float)
+                                for j, c in enumerate(all_classes):
+                                    if c in col_map and col_map[c] < y_score_mat.shape[1]:
+                                        aligned[:, j] = y_score_mat[:, col_map[c]]
+                                y_score_mat = aligned
+
+                            aucs = []
+                            for j in range(len(all_classes)):
+                                # Need both 0 and 1 present for binary AUC for that class
+                                if y_bin[:, j].max() == 1 and y_bin[:, j].min() == 0 and not np.all(np.isnan(y_score_mat[:, j])):
+                                    try:
+                                        aucs.append(roc_auc_score(y_bin[:, j], y_score_mat[:, j]))
+                                    except Exception:
+                                        pass
+                            auc_val = float(np.mean(aucs)) if len(aucs) > 0 else np.nan
+                    else:
+                        # binary: require both classes present in this fold
+                        if len(np.unique(y_test)) < 2:
+                            auc_val = np.nan
+                        else:
+                            if isinstance(y_score, np.ndarray) and y_score.ndim == 2:
+                                auc_val = roc_auc_score(y_test, y_score[:, 1])
+                            else:
+                                auc_val = roc_auc_score(y_test, y_score)
+            except Exception:
+                auc_val = np.nan
+            fold_scores["roc_auc"].append(auc_val)
+
+        self._show_cv_results_dialog(fold_scores, task=task)
+
+    def _show_cv_results_dialog(self, fold_scores: dict, task="classification"):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("5-Fold Cross-Validation Results")
+        dialog.setGeometry(120, 120, 560, 320)
+        layout = QVBoxLayout(dialog)
+
+        strategy = self.cvSplitStrategyCombo.currentText() if hasattr(self, "cvSplitStrategyCombo") else "(unknown)"
+        header = QLabel(f"Split strategy: <b>{strategy}</b>  |  k=5")
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        table = QTableWidget(dialog)
+
+        if task == "regression":
+            metrics = [
+                ("R2 (CV)", fold_scores["r2"]),
+                ("RMSE (CV)", fold_scores["rmse"]),
+            ]
+        else:
+            metrics = [
+                ("Accuracy (CV)", fold_scores["accuracy"]),
+                ("F1-score (CV)", fold_scores["f1"]),
+                ("ROC-AUC (CV)", fold_scores["roc_auc"]),
+            ]
+
+        table.setRowCount(len(metrics))
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(["Metric", "Mean ± SD", "Fold scores"])
+
+        for i, (name, arr) in enumerate(metrics):
+            arr_np = np.asarray(arr, dtype=float)
+            # remove nan for mean/std display if present
+            arr_clean = arr_np[~np.isnan(arr_np)]
+            mean_std = self._format_mean_std(arr_clean) if arr_clean.size else "N/A"
+            fold_txt = ", ".join([f"{v:.3f}" if not np.isnan(v) else "NA" for v in arr_np])
+            table.setItem(i, 0, QTableWidgetItem(name))
+            table.setItem(i, 1, QTableWidgetItem(mean_std))
+            table.setItem(i, 2, QTableWidgetItem(fold_txt))
+
+        table.resizeColumnsToContents()
+        layout.addWidget(table)
+
+        dialog.setLayout(layout)
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.show()
+
     def setupDataSplitTab(self):
         layout = QGridLayout()
 
@@ -2389,13 +3300,51 @@ class MyApp(QMainWindow):
 
         layout.addWidget(dataTypeGroupBox, 0, 0, 1, 1)
 
+        # ------------------------------
+        # 5-fold Cross-Validation options (k is fixed to 5)
+        # ------------------------------
+        cvGroupBox = QFrame()
+        cvGroupBox.setFrameShape(QFrame.Box)
+        cvGroupBox.setFrameShadow(QFrame.Sunken)
+        cvLayout = QVBoxLayout(cvGroupBox)
+
+        cvTitle = QLabel("5-Fold Cross-Validation (k=5)")
+        cvTitle.setStyleSheet("font-weight: bold;")
+        cvLayout.addWidget(cvTitle)
+
+        cvSelectLabel = QLabel("Select CV split strategy:")
+        self.cvSplitStrategyCombo = QComboBox()
+        self.cvSplitStrategyCombo.addItems([
+            "StratifiedKFold (classification)",
+            "KFold (general)",
+            #"GroupKFold (grouped samples)",
+            #"TimeSeriesSplit (time order)"
+        ])
+        cvLayout.addWidget(cvSelectLabel)
+        cvLayout.addWidget(self.cvSplitStrategyCombo)
+
+        self.cvSplitStrategyDesc = QLabel("")
+        self.cvSplitStrategyDesc.setWordWrap(True)
+        self.cvSplitStrategyDesc.setStyleSheet("color: gray; font-size: 11px;")
+        cvLayout.addWidget(self.cvSplitStrategyDesc)
+
+        # GroupKFold needs a group column (e.g., patient ID / subject ID)
+        self.cvGroupColumnLabel = QLabel("Group column (for GroupKFold):")
+        self.cvGroupColumnCombo = QComboBox()
+        self.cvGroupColumnLabel.setVisible(False)
+        self.cvGroupColumnCombo.setVisible(False)
+        cvLayout.addWidget(self.cvGroupColumnLabel)
+        cvLayout.addWidget(self.cvGroupColumnCombo)
+
+        layout.addWidget(cvGroupBox, 0, 1, 2, 1)
+
         self.randomSelectOptions = QWidget()
         self.randomSelectOptionsLayout = QVBoxLayout(self.randomSelectOptions)
         self.randomSelectLabel = QLabel("Random Select Options:")
         self.stratifyCheckBox = QCheckBox("Stratify")
         self.stratifyHelpLabel = QLabel(
-            "→ Stratify는 각 클래스 비율이 학습/테스트 세트에 동일하게 유지되도록 데이터를 나눕니다.<br>"
-            "   불균형 데이터셋에서 클래스 분포를 보존하려면 사용하세요."
+            "→ Stratify splits data so that class proportions are preserved in both train/test sets.<br>"
+            "   Use this to preserve class distribution in imbalanced datasets."
         )
         self.stratifyHelpLabel.setStyleSheet("color: gray; font-size: 11px; margin-left: 20px;")
         self.testSetRatioLabel = QLabel("Enter the test set ratio (0-1):")
@@ -2407,8 +3356,8 @@ class MyApp(QMainWindow):
         self.randomStateInput.setValidator(QDoubleValidator(0, 9999, 0))
         self.randomStateInput.setText("0")
         self.randomStateHelpLabel = QLabel(
-            "→ Random State 값이 같으면 매번 동일한 데이터가 테스트 세트로 선택됩니다.<br>"
-            "   값을 바꾸면 데이터 분할이 달라집니다."
+            "→ With the same Random State value, the same samples are chosen for the test set each time.<br>"
+            "   Changing the value changes the split."
         )
         self.randomStateHelpLabel.setStyleSheet("color: gray; font-size: 11px; margin-left: 20px;")
         self.randomSelectOptionsLayout.addWidget(self.randomSelectLabel)
@@ -2445,10 +3394,15 @@ class MyApp(QMainWindow):
         self.testSetWidget = QTableWidget()
         layout.addWidget(self.testSetWidget, 4, 1, 1, 1)
 
+        # CV UI init
+        self.cvSplitStrategyCombo.currentIndexChanged.connect(self._update_cv_strategy_ui)
+        self._refresh_cv_group_columns()
+        self._update_cv_strategy_ui()
+
         self.dataSplitTab.setLayout(layout)
 
     def _get_bundle_scaler(self):
-        # split에서 scaled 데이터를 썼을 때만 scaler를 함께 저장
+        # comment
         return self.scaler if getattr(self, "last_split_used_scaled", False) else None
 
     def _get_label_mapping(self):
@@ -2520,14 +3474,14 @@ class MyApp(QMainWindow):
         for i in range(len(X_train)):
             for j in range(X_train.shape[1]):
                 value = X_train.iloc[i, j]
-                # 숫자일 경우 소수점 4자리까지, 정수는 소수점 없이 표시
+                # comment
                 if isinstance(value, float):
                     formatted_value = f"{int(value)}" if value.is_integer() else f"{value:.4f}"
                 else:
                     formatted_value = str(value)
                 self.trainSetWidget.setItem(i, j, QTableWidgetItem(formatted_value))
 
-            # y_train 처리 (값만 추출)
+            # comment
             y_value = y_train.values[i]
             if isinstance(y_value, float):
                 formatted_value = f"{int(y_value)}" if y_value.is_integer() else f"{y_value:.4f}"
@@ -2547,14 +3501,14 @@ class MyApp(QMainWindow):
         for i in range(len(X_test)):
             for j in range(X_test.shape[1]):
                 value = X_test.iloc[i, j]
-                # 숫자일 경우 소수점 4자리까지, 정수는 소수점 없이 표시
+                # comment
                 if isinstance(value, float):
                     formatted_value = f"{int(value)}" if value.is_integer() else f"{value:.4f}"
                 else:
                     formatted_value = str(value)
                 self.testSetWidget.setItem(i, j, QTableWidgetItem(formatted_value))
 
-            # y_test 처리 (값만 추출)
+            # comment
             y_value = y_test.values[i]
             if isinstance(y_value, float):
                 formatted_value = f"{int(y_value)}" if y_value.is_integer() else f"{y_value:.4f}"
@@ -2563,7 +3517,7 @@ class MyApp(QMainWindow):
             self.testSetWidget.setItem(i, X_test.shape[1], QTableWidgetItem(formatted_value))
 
     def loadCsv(self, checked=False):
-        # QAction.triggered가 bool(checked)을 넘기므로 checked 인자를 받아야 함
+        # comment
         options = QFileDialog.Options()
         filename, _ = QFileDialog.getOpenFileName(
             self, "Open CSV File", "",
@@ -2573,26 +3527,29 @@ class MyApp(QMainWindow):
             return
 
         try:
-            # CsvViewer의 로딩 루틴 사용 (ColumnRoleDialog 포함)
+            # comment
             self.csvViewer.loadCsv(filename)
 
-            # UI: 가이드 숨기고 뷰어 보여주기 (원하면 제거 가능)
+            # comment
             if hasattr(self, "guideWidget"):
                 self.guideWidget.hide()
             self.csvViewer.show()
 
-            # Temp 폴더에 splitData가 필요로 하는 파일 저장
+            # comment
             output_dir = resource_path('Temp')
             os.makedirs(output_dir, exist_ok=True)
 
-            # original_X.csv : Sample + Feature들
+            # comment
             if getattr(self.csvViewer, "original_data", None) is not None:
                 self.csvViewer.original_data.to_csv(os.path.join(output_dir, "original_X.csv"), index=False)
 
-            # scaled_y.csv : Label만 (이름은 splitData에서 scaled_y.csv로 읽고 있어서 유지)
+            # comment
             if getattr(self.csvViewer, "y", None) is not None:
                 pd.DataFrame(self.csvViewer.y, columns=["Label"]).to_csv(os.path.join(output_dir, "scaled_y.csv"),
                                                                          index=False)
+
+            # refresh CV group-column list (if Data Split tab is already created)
+            self._refresh_cv_group_columns()
 
             QMessageBox.information(self, "Load Complete", f"Loaded CSV:\n{os.path.basename(filename)}")
 
@@ -2600,7 +3557,7 @@ class MyApp(QMainWindow):
             QMessageBox.warning(self, "Load Error", f"Failed to load CSV: {e}")
 
     def exitApp(self):
-        reply = QMessageBox.question(self, 'Message', '정말 닫으시겠습니까?', QMessageBox.Yes | QMessageBox.Cancel,
+        reply = QMessageBox.question(self, 'Message', 'Are you sure you want to close?', QMessageBox.Yes | QMessageBox.Cancel,
                                      QMessageBox.Cancel)
         if reply == QMessageBox.Yes:
             QCoreApplication.instance().quit()
@@ -2608,36 +3565,36 @@ class MyApp(QMainWindow):
     def show_scaled_data(self, scaled_X_df, y, headers):
         self.scaledDataWidget.clear()
         self.scaledDataWidget.setRowCount(len(scaled_X_df))
-        self.scaledDataWidget.setColumnCount(len(headers) + 2)  # 샘플 이름과 타겟 포함
+        self.scaledDataWidget.setColumnCount(len(headers) + 2)  # comment
         self.scaledDataWidget.setHorizontalHeaderLabels(["Sample"] + headers + ["Label"])
 
         for i, row in scaled_X_df.iterrows():
-            # 샘플 이름을 정수로 표시
+            # comment
             sample_value = row.iloc[0]
             if isinstance(sample_value, float) and sample_value.is_integer():
-                formatted_sample = f"{int(sample_value)}"  # 정수로 변환하여 소수점 제거
+                formatted_sample = f"{int(sample_value)}"  # comment
             else:
                 formatted_sample = str(sample_value)
             self.scaledDataWidget.setItem(i, 0, QTableWidgetItem(formatted_sample))
 
-            # 피처
+            # comment
             for j, cell in enumerate(row[1:], start=1):
                 if isinstance(cell, float):
-                    formatted_value = f"{int(cell)}" if cell.is_integer() else f"{cell:.4f}"  # 정수인지 실수인지 구분
+                    formatted_value = f"{int(cell)}" if cell.is_integer() else f"{cell:.4f}"  # comment
                 elif isinstance(cell, int):
-                    formatted_value = f"{cell}"  # 정수일 경우
+                    formatted_value = f"{cell}"  # comment
                 else:
-                    formatted_value = str(cell)  # 그 외의 경우
+                    formatted_value = str(cell)  # comment
                 self.scaledDataWidget.setItem(i, j, QTableWidgetItem(formatted_value))
 
-            # 타겟(Label)
+            # comment
             if isinstance(y[i], float):
-                formatted_label = f"{int(y[i])}" if y[i].is_integer() else f"{y[i]:.4f}"  # 정수인지 실수인지 구분
+                formatted_label = f"{int(y[i])}" if y[i].is_integer() else f"{y[i]:.4f}"  # comment
             elif isinstance(y[i], int):
-                formatted_label = f"{y[i]}"  # 정수일 경우
+                formatted_label = f"{y[i]}"  # comment
             else:
-                formatted_label = str(y[i])  # 그 외의 경우
-            self.scaledDataWidget.setItem(i, len(headers) + 1, QTableWidgetItem(formatted_label))  # 타겟
+                formatted_label = str(y[i])  # comment
+            self.scaledDataWidget.setItem(i, len(headers) + 1, QTableWidgetItem(formatted_label))  # comment
 
         self.tabs.setCurrentWidget(self.scaledDataTab)
 
@@ -2673,7 +3630,7 @@ class CsvViewer(QWidget):
             data['Sample'] = range(1, len(data) + 1)
             sample_column_name = 'Sample'
 
-        # Label 처리 (숫자면 그대로, 문자면 매핑)
+        # comment
         if pd.api.types.is_numeric_dtype(data[label_column_name]):
             y = data[label_column_name].to_numpy()
             self.label_mapping = None
@@ -2689,19 +3646,19 @@ class CsvViewer(QWidget):
             data[label_column_name] = data[label_column_name].map(labelMappings).astype(float)
             y = data[label_column_name].to_numpy()
 
-        # Feature numeric 변환
+        # comment
         for col in feature_columns:
             data[col] = pd.to_numeric(data[col], errors='coerce')
 
-        # 컬럼명 통일
+        # comment
         data = data.rename(columns={sample_column_name: 'Sample', label_column_name: 'Label'})
 
-        # 저장
+        # comment
         self.original_data = data[['Sample'] + feature_columns]
         self.X = data[feature_columns].to_numpy()
         self.y = y
 
-        # 표시
+        # comment
         self.showCsvData(data[['Sample'] + feature_columns + ['Label']].values.tolist(),
                          ['Sample'] + feature_columns + ['Label'])
 
@@ -2724,6 +3681,70 @@ class CsvViewer(QWidget):
                     formatted_value = str(cell)
                 self.tableWidget.setItem(i, j, QTableWidgetItem(formatted_value))
 
+
+
+
+# ------------------------
+# Safety patch: ensure menu actions have handlers
+# (Some earlier edits accidentally nested these functions outside MyApp.)
+# ------------------------
+def _kuquickml_myapp_loadCsv(self, checked=False):
+    """Open a CSV file and load it through CsvViewer, then persist Temp files for split/CV."""
+    options = QFileDialog.Options()
+    filename, _ = QFileDialog.getOpenFileName(
+        self, "Open CSV File", "",
+        "CSV Files (*.csv);;All Files (*)", options=options
+    )
+    if not filename:
+        return
+    try:
+        # Use CsvViewer loader (includes ColumnRoleDialog / label mapping)
+        self.csvViewer.loadCsv(filename)
+
+        # Optional: hide guide widget if present
+        if hasattr(self, "guideWidget"):
+            self.guideWidget.hide()
+        self.csvViewer.show()
+
+        # Persist files used by data split / CV routines
+        output_dir = resource_path('Temp')
+        os.makedirs(output_dir, exist_ok=True)
+
+        if getattr(self.csvViewer, "original_data", None) is not None:
+            self.csvViewer.original_data.to_csv(os.path.join(output_dir, "original_X.csv"), index=False)
+
+        if getattr(self.csvViewer, "y", None) is not None:
+            pd.DataFrame(self.csvViewer.y, columns=["Label"]).to_csv(
+                os.path.join(output_dir, "scaled_y.csv"), index=False
+            )
+
+        # refresh CV group-column list (if Data Split tab is already created)
+        if hasattr(self, "_refresh_cv_group_columns"):
+            self._refresh_cv_group_columns()
+
+        QMessageBox.information(self, "Load Complete", f"Loaded CSV:\n{os.path.basename(filename)}")
+    except Exception as e:
+        QMessageBox.warning(self, "Load Error", f"Failed to load CSV: {e}")
+
+
+def _kuquickml_myapp_exitApp(self):
+    reply = QMessageBox.question(
+        self, 'Message', 'Are you sure you want to close?',
+        QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel
+    )
+    if reply == QMessageBox.Yes:
+        QCoreApplication.instance().quit()
+
+
+# Attach missing handlers if they are not present on MyApp
+try:
+    if not hasattr(MyApp, "loadCsv"):
+        MyApp.loadCsv = _kuquickml_myapp_loadCsv
+    if not hasattr(MyApp, "exitApp"):
+        MyApp.exitApp = _kuquickml_myapp_exitApp
+except Exception:
+    # If MyApp is not defined for some reason, ignore.
+    pass
 
 if __name__ == '__main__':
 
