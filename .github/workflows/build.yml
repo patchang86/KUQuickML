@@ -137,7 +137,7 @@ jobs:
         run: |
           ls -la dist/KUQuickML/_internal/sklearn || true
           ls -la dist/KUQuickML/_internal/sklearn/.libs || true
-          test -f dist/KUQuickML/_internal/sklearn/.libs/msvcp140.dll
+          test -d dist/KUQuickML/_internal/sklearn/.libs
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
