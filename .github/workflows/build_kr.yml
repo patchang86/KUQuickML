@@ -1,0 +1,90 @@
+name: Build KUQuickML
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'kuquickmlv4.0.py'
+      - 'kuquickmlv4.0_english.py'
+      - 'dialogs/**'
+      - 'icon.png'
+      - 'requirements-kuquickml-build.txt'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            entry: kuquickmlv4.0.py
+            artifact_name: KUQuickML-Windows
+            data_sep: ';'
+          - os: macos-latest
+            entry: kuquickmlv4.0_english.py
+            artifact_name: KUQuickML-macOS
+            data_sep: ':'
+          - os: ubuntu-latest
+            entry: kuquickmlv4.0_english.py
+            artifact_name: KUQuickML-Linux
+            data_sep: ':'
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Linux GUI libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxkbcommon-x11-0 libdbus-1-3 libxcb-cursor0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-kuquickml-build.txt
+
+      - name: Verify Optuna import in build environment
+        run: |
+          python -c "import optuna; print('optuna', optuna.__version__)"
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          pyinstaller \
+            --noconfirm \
+            --clean \
+            --onedir \
+            --windowed \
+            --name KUQuickML \
+            --add-data "dialogs${{ matrix.data_sep }}dialogs" \
+            --add-data "icon.png${{ matrix.data_sep }}." \
+            --collect-all sklearn \
+            --collect-all matplotlib \
+            --collect-all mplcursors \
+            --collect-all seaborn \
+            --collect-all joblib \
+            --collect-all optuna \
+            --copy-metadata optuna \
+            --recursive-copy-metadata optuna \
+            --collect-all PyQt5 \
+            "${{ matrix.entry }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/**
+          if-no-files-found: error
