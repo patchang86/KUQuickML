@@ -85,11 +85,14 @@ jobs:
             --copy-metadata optuna \
             --recursive-copy-metadata optuna \
             --collect-all PyQt5 \
+            --collect-binaries sklearn \
+            --collect-binaries scipy \
+            --collect-binaries numpy \
             "${{ matrix.entry }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/**
+          path: dist/KUQuickML/**
           if-no-files-found: error
