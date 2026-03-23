@@ -6,11 +6,10 @@ on:
     branches: [main]
     paths:
       - 'kuquickmlv4.0.py'
-      - 'kuquickmlv4.0_english.py'
       - 'dialogs/**'
       - 'icon.png'
       - 'requirements-kuquickml-build.txt'
-      - '.github/workflows/build.yml'
+      - '.github/workflows/build_kr.yml'
 
 permissions:
   contents: read
@@ -22,16 +21,16 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            entry: kuquickmlv4.0_english.py
-            artifact_name: KUQuickML-Windows
+            entry: kuquickmlv4.0.py
+            artifact_name: KUQuickML-KR-Windows
             data_sep: ';'
           - os: macos-latest
-            entry: kuquickmlv4.0_english.py
-            artifact_name: KUQuickML-macOS
+            entry: kuquickmlv4.0.py
+            artifact_name: KUQuickML-KR-macOS
             data_sep: ':'
           - os: ubuntu-latest
             entry: kuquickmlv4.0.py
-            artifact_name: KUQuickML-Linux
+            artifact_name: KUQuickML-KR-Linux
             data_sep: ':'
 
     runs-on: ${{ matrix.os }}
@@ -74,6 +73,10 @@ jobs:
             --collect-all sklearn \
             --collect-all scipy \
             --collect-all numpy \
+            --collect-binaries sklearn \
+            --collect-binaries scipy \
+            --collect-binaries numpy \
+            --copy-metadata scikit-learn \
             --copy-metadata scipy \
             --copy-metadata numpy \
             --collect-all matplotlib \
@@ -84,10 +87,6 @@ jobs:
             --copy-metadata optuna \
             --recursive-copy-metadata optuna \
             --collect-all PyQt5 \
-            --collect-binaries sklearn \
-            --collect-binaries scipy \
-            --collect-binaries numpy \
-            --copy-metadata scikit-learn \
             --hidden-import sklearn._distributor_init \
             "${{ matrix.entry }}"
 
