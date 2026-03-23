@@ -8,6 +8,8 @@ on:
       - 'kuquickmlv4.0.py'
       - 'dialogs/**'
       - 'icon.png'
+      - 'icon.ico'
+      - 'icon.icns'
       - 'requirements-kuquickml-build.txt'
       - '.github/workflows/build_kr.yml'
 
@@ -62,12 +64,20 @@ jobs:
       - name: Build with PyInstaller
         shell: bash
         run: |
+          ICON_ARG=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ICON_ARG="--icon icon.ico"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            ICON_ARG="--icon icon.icns"
+          fi
+
           pyinstaller \
             --noconfirm \
             --clean \
             --onedir \
             --windowed \
             --name KUQuickML \
+            $ICON_ARG \
             --add-data "dialogs${{ matrix.data_sep }}dialogs" \
             --add-data "icon.png${{ matrix.data_sep }}." \
             --collect-all sklearn \
@@ -115,7 +125,10 @@ jobs:
               shutil.rmtree(dst)
 
           shutil.copytree(src, dst)
-          print("Copied:", src, "->", dst)
+
+          print("copied files:")
+          for p in dst.iterdir():
+              print(" -", p.name)
           PY
 
       - name: Verify sklearn .libs on Windows
@@ -124,6 +137,7 @@ jobs:
         run: |
           ls -la dist/KUQuickML/_internal/sklearn || true
           ls -la dist/KUQuickML/_internal/sklearn/.libs || true
+          test -f dist/KUQuickML/_internal/sklearn/.libs/msvcp140.dll
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -131,3 +145,4 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: dist/KUQuickML/**
           if-no-files-found: error
+          include-hidden-files: true
