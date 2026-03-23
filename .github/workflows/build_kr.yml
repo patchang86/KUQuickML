@@ -22,7 +22,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            entry: kuquickmlv4.0.py
+            entry: kuquickmlv4.0_english.py
             artifact_name: KUQuickML-Windows
             data_sep: ';'
           - os: macos-latest
@@ -30,7 +30,7 @@ jobs:
             artifact_name: KUQuickML-macOS
             data_sep: ':'
           - os: ubuntu-latest
-            entry: kuquickmlv4.0_english.py
+            entry: kuquickmlv4.0.py
             artifact_name: KUQuickML-Linux
             data_sep: ':'
 
@@ -72,6 +72,11 @@ jobs:
             --add-data "dialogs${{ matrix.data_sep }}dialogs" \
             --add-data "icon.png${{ matrix.data_sep }}." \
             --collect-all sklearn \
+            --collect-all scipy \
+            --collect-all numpy \
+            --copy-metadata scikit-learn \
+            --copy-metadata scipy \
+            --copy-metadata numpy \
             --collect-all matplotlib \
             --collect-all mplcursors \
             --collect-all seaborn \
@@ -80,11 +85,14 @@ jobs:
             --copy-metadata optuna \
             --recursive-copy-metadata optuna \
             --collect-all PyQt5 \
+            --collect-binaries sklearn \
+            --collect-binaries scipy \
+            --collect-binaries numpy \
             "${{ matrix.entry }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/**
+          path: dist/KUQuickML/**
           if-no-files-found: error
