@@ -1,4 +1,4 @@
-name: Build KUQuickML
+name: Build KUQuickML KR
 
 on:
   workflow_dispatch:
