@@ -89,6 +89,7 @@ jobs:
             --collect-binaries scipy \
             --collect-binaries numpy \
             --copy-metadata sklearn \
+            --hidden-import sklearn._distributor_init \
             "${{ matrix.entry }}"
 
       - name: Upload artifact
