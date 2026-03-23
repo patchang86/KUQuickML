@@ -1,0 +1,11 @@
+pyinstaller
+numpy
+pandas
+scikit-learn
+matplotlib
+joblib
+optuna
+PyQt5
+openpyxl
+seaborn
+mplcursors
