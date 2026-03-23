@@ -74,7 +74,6 @@ jobs:
             --collect-all sklearn \
             --collect-all scipy \
             --collect-all numpy \
-            --copy-metadata scikit-learn \
             --copy-metadata scipy \
             --copy-metadata numpy \
             --collect-all matplotlib \
