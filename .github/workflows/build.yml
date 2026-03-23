@@ -5,7 +5,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'kuquickmlv4.0.py'
       - 'kuquickmlv4.0_english.py'
       - 'dialogs/**'
       - 'icon.png'
@@ -23,15 +22,15 @@ jobs:
         include:
           - os: windows-latest
             entry: kuquickmlv4.0_english.py
-            artifact_name: KUQuickML-Windows
+            artifact_name: KUQuickML-EN-Windows
             data_sep: ';'
           - os: macos-latest
             entry: kuquickmlv4.0_english.py
-            artifact_name: KUQuickML-macOS
+            artifact_name: KUQuickML-EN-macOS
             data_sep: ':'
           - os: ubuntu-latest
             entry: kuquickmlv4.0_english.py
-            artifact_name: KUQuickML-Linux
+            artifact_name: KUQuickML-EN-Linux
             data_sep: ':'
 
     runs-on: ${{ matrix.os }}
@@ -56,7 +55,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-kuquickml-build.txt
 
-      - name: Verify Optuna import in build environment
+      - name: Verify Optuna import
         run: |
           python -c "import optuna; print('optuna', optuna.__version__)"
 
@@ -74,22 +73,57 @@ jobs:
             --collect-all sklearn \
             --collect-all scipy \
             --collect-all numpy \
-            --copy-metadata scipy \
-            --copy-metadata numpy \
             --collect-all matplotlib \
             --collect-all mplcursors \
             --collect-all seaborn \
             --collect-all joblib \
             --collect-all optuna \
-            --copy-metadata optuna \
-            --recursive-copy-metadata optuna \
             --collect-all PyQt5 \
             --collect-binaries sklearn \
             --collect-binaries scipy \
             --collect-binaries numpy \
             --copy-metadata scikit-learn \
+            --copy-metadata scipy \
+            --copy-metadata numpy \
+            --copy-metadata optuna \
+            --recursive-copy-metadata optuna \
             --hidden-import sklearn._distributor_init \
             "${{ matrix.entry }}"
+
+      - name: Copy sklearn .libs on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import shutil
+          from pathlib import Path
+          import sklearn
+
+          src = Path(sklearn.__file__).resolve().parent / ".libs"
+          dst = Path("dist/KUQuickML/_internal/sklearn/.libs")
+
+          print("sklearn path:", Path(sklearn.__file__).resolve().parent)
+          print("source .libs:", src)
+          print("source exists:", src.exists())
+
+          if not src.exists():
+              raise SystemExit("ERROR: sklearn/.libs not found in build environment")
+
+          dst.parent.mkdir(parents=True, exist_ok=True)
+
+          if dst.exists():
+              shutil.rmtree(dst)
+
+          shutil.copytree(src, dst)
+          print("Copied:", src, "->", dst)
+          PY
+
+      - name: Verify sklearn .libs on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ls -la dist/KUQuickML/_internal/sklearn || true
+          ls -la dist/KUQuickML/_internal/sklearn/.libs || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
