@@ -72,6 +72,11 @@ jobs:
             --add-data "dialogs${{ matrix.data_sep }}dialogs" \
             --add-data "icon.png${{ matrix.data_sep }}." \
             --collect-all sklearn \
+            --collect-all scipy \
+            --collect-all numpy \
+            --copy-metadata scikit-learn \
+            --copy-metadata scipy \
+            --copy-metadata numpy \
             --collect-all matplotlib \
             --collect-all mplcursors \
             --collect-all seaborn \
