@@ -1,4 +1,4 @@
-print("Launching... Depending on your PC, this may take up to about 1 minute. Do not close this console window while the program is running.")
+print("Running... Depending on your PC, this may take up to about 1 minute. Do not close this console window while the program is running.")
 import sys
 import os
 import re
@@ -184,7 +184,7 @@ class MyApp(QMainWindow):
         self.mainTab = QWidget()
         self.scaledDataTab = QWidget()
         self.predictionTab = QWidget()
-        self.previousModelPredictionTab = QWidget()  # add a new tab
+        self.previousModelPredictionTab = QWidget()  # add new tab
 
         self.tabs.addTab(self.mainTab, "Main")
         self.tabs.addTab(self.scaledDataTab, "Scaled Data")
@@ -254,7 +254,7 @@ class MyApp(QMainWindow):
         fileMenu.addAction(exitAction)
 
     def _drop_sample_and_numeric(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Drop the Sample column and force all columns to numeric (errors become NaN)"""
+        """Remove the Sample column and coerce all values to numeric (errors become NaN)"""
         if 'Sample' in df.columns:
             df = df.drop(columns=['Sample'])
         df = df.apply(pd.to_numeric, errors='coerce')
@@ -262,10 +262,10 @@ class MyApp(QMainWindow):
 
     def _fit_preprocess_train_test(self, X_train_df: pd.DataFrame, X_test_df: pd.DataFrame, y_train):
         """
-        Preprocessing for training (fit scaler/reducer using training data only)
+        Training-time preprocessing (fit scaler/reducer on the training data)
         Returns: X_train_used, X_test_used, fitted_scaler, fitted_reducer, feature_names
         """
-        # 0) save feature names (order is critical)
+        # 0) store feature names first (order is critical)
         feature_names = list(X_train_df.columns)
 
         # 1) scaler (each model keeps its own fitted scaler)
@@ -279,7 +279,7 @@ class MyApp(QMainWindow):
             X_train_scaled = X_train_df.values
             X_test_scaled = X_test_df.values
 
-        # 2) reducer (must fit/transform after the scaler)
+        # 2) reducer (must be fit/transformed after the scaler)
         reducer = None
         selected = self.getSelectedDimReductionMethod()
         if selected:
@@ -439,6 +439,7 @@ class MyApp(QMainWindow):
         self.tabs.addTab(self.dataSplitTab, "Data Split")
         self.tabs.setCurrentWidget(self.dataSplitTab)
         self.setupDataSplitTab()
+
 
 
 
@@ -756,6 +757,7 @@ class MyApp(QMainWindow):
         def objective(trial):
             params = suggest_params(trial)
             scores = []
+            failed_folds = 0
             split_iter = splitter.split(X_train_numeric, y_train) if str(task).lower() == 'classification' else splitter.split(X_train_numeric)
             for train_idx, valid_idx in split_iter:
                 X_tr = X_train_numeric.iloc[train_idx]
@@ -763,17 +765,27 @@ class MyApp(QMainWindow):
                 y_tr = y_train[train_idx]
                 y_va = y_train[valid_idx]
                 reducer_name = params.get('reducer', 'None')
-                X_tr_used, X_va_used, _ = self._fit_transform_with_reducer_name(reducer_name, X_tr, X_va, y_tr, task)
-                model = build_estimator(params)
-                with warnings.catch_warnings():
-                    warnings.filterwarnings('ignore', category=ConvergenceWarning, module='sklearn')
-                    model.fit(X_tr_used, y_tr)
-                preds = model.predict(X_va_used)
-                score = accuracy_score(y_va, preds) if metric == 'accuracy' else r2_score(y_va, preds)
-                if np.isnan(score):
-                    raise ValueError('NaN score encountered during tuning.')
-                scores.append(float(score))
-            return float(np.mean(scores))
+                try:
+                    X_tr_used, X_va_used, _ = self._fit_transform_with_reducer_name(reducer_name, X_tr, X_va, y_tr, task)
+                    model = build_estimator(params)
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings('ignore', category=ConvergenceWarning, module='sklearn')
+                        model.fit(X_tr_used, y_tr)
+                    preds = model.predict(X_va_used)
+                    score = accuracy_score(y_va, preds) if metric == 'accuracy' else r2_score(y_va, preds)
+                    if np.isnan(score) or np.isinf(score):
+                        failed_folds += 1
+                        continue
+                    scores.append(float(score))
+                except Exception:
+                    failed_folds += 1
+                    continue
+            if not scores:
+                return -1e9
+            mean_score = float(np.mean(scores))
+            if failed_folds:
+                mean_score -= failed_folds * 1e3
+            return mean_score
 
         progress = QProgressDialog(f"Automatic tuning in progress...\nModel: {model_name_u}\nMetric: {metric}", None, 0, 30, self)
         progress.setWindowTitle('Optuna Tuning')
@@ -822,10 +834,13 @@ class MyApp(QMainWindow):
         best_score = tuning_result.get('best_score')
         metric = tuning_result.get('metric')
         best_params = tuning_result.get('best_params', {})
-        summary = QLabel(
-            f"Best CV {metric}: {best_score:.4f}\n\nBest parameters:\n"
-            + "\n".join(f"- {k}: {_fmt_optuna_value(v)}" for k, v in best_params.items())
+        summary_html = (
+            f"<b>Best CV {metric}: {best_score:.4f}</b><br><br><b>Best parameters:</b><br>"
+            + "<br>".join(f"- {k}: {_fmt_optuna_value(v)}" for k, v in best_params.items())
         )
+        summary = QLabel()
+        summary.setTextFormat(Qt.RichText)
+        summary.setText(summary_html)
         summary.setWordWrap(True)
         layout.addWidget(summary)
 
@@ -982,8 +997,8 @@ class MyApp(QMainWindow):
         # --- Top: SVM overview ---
         svm_overview = QLabel(
             "<h3>⚙️ Support Vector Machine (SVM)</h3>"
-            "<p>SVM is an algorithm that finds the optimal hyperplane separating classes when classifying or regressing on the given data.<br>"
-            "Using kernel functions, it can also separate non-linear data in a higher-dimensional space.</p>"
+            "<p>SVM is an algorithm that finds an optimal hyperplane to separate class boundaries for classification or regression tasks.<br>"
+            "Using kernel functions, it can also separate nonlinear data in a higher-dimensional space.</p>"
         )
         svm_overview.setWordWrap(True)
         layout.addWidget(svm_overview)
@@ -1008,8 +1023,8 @@ class MyApp(QMainWindow):
         self.svm_type = QComboBox()
         self.svm_type.addItems(["One-vs-Rest SVM", "One-vs-One SVM"])
         desc = QLabel("Select the SVM classification strategy.<br>"
-                      "<b>One-vs-Rest</b>: Compare one class against all others (faster)<br>"
-                      "<b>One-vs-One</b>: Train all pairwise class combinations (often higher accuracy)")
+                      "<b>One-vs-Rest</b>: compare one class against all others (faster)<br>"
+                      "<b>One-vs-One</b>: train all pairwise class combinations (often higher accuracy)")
         desc.setStyleSheet(desc_style)
         frame_type_layout.addWidget(label)
         frame_type_layout.addWidget(self.svm_type)
@@ -1024,10 +1039,10 @@ class MyApp(QMainWindow):
         label = QLabel("Select Kernel Type:")
         self.kernel_type = QComboBox()
         self.kernel_type.addItems(["linear", "poly", "rbf", "sigmoid"])
-        desc = QLabel("A kernel is a function that maps input data into a higher-dimensional space.<br>"
+        desc = QLabel("A kernel transforms the input data into a higher-dimensional space.<br>"
                       "<b>linear</b>: linear boundary, fast<br>"
                       "<b>poly</b>: polynomial kernel<br>"
-                      "<b>rbf</b>: Gaussian-based, strong for non-linear data<br>"
+                      "<b>rbf</b>: Gaussian-based, strong for nonlinear data<br>"
                       "<b>sigmoid</b>: neural-network-like behavior")
         desc.setStyleSheet(desc_style)
         frame_kernel_layout.addWidget(label)
@@ -1042,11 +1057,11 @@ class MyApp(QMainWindow):
         frame_c_layout = QVBoxLayout(frame_c)
         label = QLabel("C Value:")
         self.c_value = QDoubleSpinBox()
-        self.c_value.setRange(0.01, 100.0)
+        self.c_value.setRange(0.01, 2000.0)
         self.c_value.setValue(1.0)
         self.c_value.setSingleStep(0.01)
         desc = QLabel("The C value controls the regularization strength and error tolerance.<br>"
-                      "Smaller values improve generalization (slower but more stable), while larger values improve training accuracy (with higher overfitting risk).")
+                      "Smaller values favor generalization (slower but more stable); larger values favor training accuracy (with overfitting risk).")
         desc.setStyleSheet(desc_style)
         frame_c_layout.addWidget(label)
         frame_c_layout.addWidget(self.c_value)
@@ -1062,7 +1077,7 @@ class MyApp(QMainWindow):
         self.random_state_input = QSpinBox()
         self.random_state_input.setRange(0, 999999)
         self.random_state_input.setValue(42)
-        desc = QLabel("This seed value controls random initialization.<br>Keep the same value to reproduce the same results.")
+        desc = QLabel("This seed controls random initialization.<br>Keep the same value to reproduce the same results.")
         desc.setStyleSheet(desc_style)
         frame_random_layout.addWidget(label)
         frame_random_layout.addWidget(self.random_state_input)
@@ -1082,7 +1097,7 @@ class MyApp(QMainWindow):
         self.svrEpsilonInput.setRange(0.0, 10.0)
         self.svrEpsilonInput.setValue(0.1)
         self.svrEpsilonInput.setSingleStep(0.01)
-        desc = QLabel("This is the width of the epsilon-insensitive zone. Smaller values can make the model more sensitive to the data.")
+        desc = QLabel("Width of the epsilon-insensitive region. Smaller values can make the model more sensitive to the data.")
         desc.setStyleSheet(desc_style)
         frame_svr_layout.addWidget(label)
         frame_svr_layout.addWidget(self.svrEpsilonInput)
@@ -1101,7 +1116,7 @@ class MyApp(QMainWindow):
         self.ncaCheckBox = QCheckBox("NCA")
         self.noneCheckBox = QCheckBox("None")
 
-        self.pcaCheckBox.setChecked(True)  # Set PCA as the default
+        self.pcaCheckBox.setChecked(True)  # set PCA as default
         self.dimensionalityGroup = QButtonGroup()
         for checkbox in [self.pcaCheckBox, self.ldaCheckBox, self.ncaCheckBox, self.noneCheckBox]:
             frame_reducer_layout.addWidget(checkbox)
@@ -1109,8 +1124,8 @@ class MyApp(QMainWindow):
         self.dimensionalityGroup.setExclusive(True)
         desc = QLabel("Dimensionality reduction projects data into a lower-dimensional space to improve computational efficiency and visualization.<br>"
                       "<b>PCA</b>: Principal Component Analysis (general-purpose)<br>"
-                      "<b>LDA</b>: optimize separation between classes (for SVR regression, y is discretized into bins)<br>"
-                      "<b>NCA</b>: suitable for distance-based classification (for SVR regression, y is discretized into bins)<br>"
+                      "<b>LDA</b>: optimizes separation between classes (for SVR regression, y is binned for supervision)<br>"
+                      "<b>NCA</b>: suitable for distance-based classification (for SVR regression, y is binned for supervision)<br>"
                       "<b>None</b>: no dimensionality reduction")
         desc.setStyleSheet(desc_style)
         frame_reducer_layout.addWidget(desc)
@@ -1186,7 +1201,7 @@ class MyApp(QMainWindow):
 
     def createSVMModel(self):
         loading = QProgressDialog(
-            "Creating the model...\n\nDepending on your computer, this may take several minutes.",
+            "Creating the model...\n\nDepending on your computer, this may take a few minutes.",
             None, 0, 0, self
         )
         loading.setWindowTitle("Creating SVM model")
@@ -1212,11 +1227,13 @@ class MyApp(QMainWindow):
 
             feature_names = list(X_train_numeric.columns)
 
-            # reducer (raw/scaled state is already determined at the split stage, so do not apply extra scaling here)
+            # reducer (scaled/raw is already determined at the split stage, so do not apply additional scaling here)
             selected = self.getSelectedDimReductionMethod()
             reducer = None
+            method_name = "None"
             if selected:
-                _, reducer = selected
+                method_name, reducer = selected
+            if reducer is not None:
                 reducer.fit(X_train_numeric.values, y_train)
                 X_train_used = reducer.transform(X_train_numeric.values)
                 X_test_used = reducer.transform(X_test_numeric.values)
@@ -1251,16 +1268,17 @@ class MyApp(QMainWindow):
             self.showConfusionMatrix(cm_df)
 
             overall_accuracy = np.sum(np.diag(cm)) / np.sum(cm)
-            self.plotScatterWithDecisionBoundary(
-                X_train_used, y_train, X_test_used, y_pred_test, svc_model,
-                f"SVM Scatter Plot with Decision Boundary (kernel={kernel})\nTest accuracy = {overall_accuracy:.3f}"
-            )
+            if hasattr(X_train_used, "shape") and len(X_train_used.shape) == 2 and X_train_used.shape[1] == 2:
+                self.plotScatterWithDecisionBoundary(
+                    X_train_used, y_train, X_test_used, y_pred_test, svc_model,
+                    f"SVM Scatter Plot with Decision Boundary (kernel={kernel})\nTest accuracy = {overall_accuracy:.3f}"
+                )
 
-            # Important coefficients: only for linear kernels without a reducer (coef_-based)
+            # important coefficients: only for linear kernel with no reducer (coef_-based)
             if kernel == "linear" and reducer is None and hasattr(svc_model, "coef_"):
                 self.showImportantCoefficients(X_train_numeric, svc_model)
             else:
-                # For non-linear kernels or when dimensionality reduction is applied: explain why and offer a permutation option
+                # nonlinear kernel or dimensionality reduction applied: explain the reason + offer permutation option
                 self.showSVMImportanceUnavailable(
                     kernel=kernel,
                     reducer=reducer,
@@ -1277,7 +1295,7 @@ class MyApp(QMainWindow):
                 f"SVC Observed vs Predicted (kernel={kernel})"
             )
 
-            # ✅ Save bundle (used as-is in the prediction tab)
+            # save bundle (used as-is in the prediction tab)
             self.models["SV Classification"] = {
                 "model": svc_model,
                 "scaler": self._get_bundle_scaler(),
@@ -1337,7 +1355,7 @@ class MyApp(QMainWindow):
             if kernel == "linear" and reducer is None and hasattr(svr_model, "coef_"):
                 self.showImportantCoefficients(X_train_numeric, svr_model)
             else:
-                # For non-linear kernels or when dimensionality reduction is applied: explain why and offer a permutation option
+                # nonlinear kernel or dimensionality reduction applied: explain the reason + offer permutation option
                 self.showSVMImportanceUnavailable(
                     kernel=kernel,
                     reducer=reducer,
@@ -1350,7 +1368,7 @@ class MyApp(QMainWindow):
                 )
 
 
-            # When 2D dimensionality reduction (PCA) is applied, show the SVR regression surface
+            # when 2D reduction is applied, show the SVR regression prediction surface
             if reducer is not None and hasattr(X_train_used, "shape") and X_train_used.shape[1] == 2:
                 self.plotScatterWithRegressionSurface(
                     X_train_used, y_train,
@@ -1414,10 +1432,10 @@ class MyApp(QMainWindow):
 
 
     def plotScatterWithDecisionBoundary(self, X_train_reduced, y_train, X_test_reduced, y_pred_test, model, title):
-        """Visualize the classification decision boundary in a 2D reduced space.
+        """Visualize the classification decision boundary in the 2D reduced space.
         - Keep the background white.
-        - For binary SVM, show the decision boundary as a black solid line and the margin as gray dashed lines.
-        - For multiclass cases, focus mainly on the scatter plot.
+        - For binary SVM, the black solid line shows the decision boundary and the gray dashed lines show the margins.
+        - For multiclass problems, the display focuses on the scatter plot.
         """
         plt.figure(figsize=(10, 8))
         ax = plt.gca()
@@ -1513,9 +1531,9 @@ class MyApp(QMainWindow):
 
 
     def plotScatterWithRegressionSurface(self, X_train_reduced, y_train, X_test_reduced, y_test, model, title):
-        """Display contours of regression predictions on a white background in a 2D reduced space.
+        """Display regression prediction contours on a white background in the 2D reduced space.
         - Keep the background white.
-        - Contour lines indicate the same predicted value.
+        - Each contour line represents the same predicted value.
         """
         plt.figure(figsize=(10, 8))
         ax = plt.gca()
@@ -1613,7 +1631,7 @@ class MyApp(QMainWindow):
         dialog_layout = QVBoxLayout(dialog)
 
         info = QLabel(
-            "Feature importance is displayed using the coefficients (coef_) of a linear SVM/SVR.\n"
+            "Feature importance is displayed using the coefficients (coef_) of linear SVM/SVR models.\n"
             "Larger absolute values indicate stronger influence, and the sign (+/−) indicates the prediction direction (increase/decrease)."
         )
         info.setWordWrap(True)
@@ -1638,12 +1656,12 @@ class MyApp(QMainWindow):
 
 
     def showSVMImportanceUnavailable(self, kernel, reducer, X_test, y_test, model, feature_names, title_prefix="SVM", task="classification"):
-        """If feature importance cannot be shown using coef_, explain why
-        and compute permutation importance when possible.
+        """When feature importance cannot be displayed with coef_, explain why
+        and calculate permutation importance when possible.
 
         - X_test is expected to be a DataFrame in the original feature space (before dimensionality reduction/transformation).
-        - If a reducer exists, permutation importance still shuffles the original features,
-          while predictions are passed to the trained model after reducer.transform.
+        - If a reducer exists, permutation importance is still computed by shuffling the original features,
+          and predictions are passed to the trained model through reducer.transform.
         """
 
         class _ReducerWrappedEstimator:
@@ -1703,23 +1721,23 @@ class MyApp(QMainWindow):
 
         reasons = []
         if kernel != "linear":
-            reasons.append("The selected kernel is non-linear, so coefficients (coef_) are not defined for the input features.")
+            reasons.append("The selected kernel is nonlinear, so coefficients (coef_) for the input features are not defined.")
         if reducer is not None:
-            reasons.append("Dimensionality reduction was applied, so the original features were transformed and coef_-based importance cannot be computed in the original feature space.")
+            reasons.append("Dimensionality reduction transformed the original features, so coef_-based importance cannot be computed in the original feature space.")
 
-        reason_text = "\n".join(f"- {r}" for r in reasons) if reasons else "- coef_-based importance cannot be computed."
+        reason_text = "\n".join(f"- {r}" for r in reasons) if reasons else "- coef_ -based importance cannot be computed."
 
         msg_box = QMessageBox(self)
         msg_box.setIcon(QMessageBox.Information)
         msg_box.setWindowTitle("Feature Importance")
         msg_box.setText(
-            f"{title_prefix} cannot display feature importance using coef_.\n\n"
+            f"{title_prefix} cannot display Feature importance using coef_.\n\n"
             f"{reason_text}\n\n"
-            "Instead, permutation importance (how much the score drops when a feature is shuffled) can be computed and displayed.\n"
+            "Instead, permutation importance can be calculated and displayed (how much the score drops when a feature is shuffled).\n"
             "(Permutation importance can be computationally expensive.)"
         )
 
-        perm_btn = msg_box.addButton("Calculate Permutation Importance", QMessageBox.ActionRole)
+        perm_btn = msg_box.addButton("Calculate permutation importance", QMessageBox.ActionRole)
         close_btn = msg_box.addButton("Close", QMessageBox.RejectRole)
         msg_box.setDefaultButton(close_btn)
         msg_box.exec_()
@@ -1759,7 +1777,7 @@ class MyApp(QMainWindow):
     def setupMainTab(self):
         self.mainLayout = QVBoxLayout()
 
-        # create guide widget
+        # Create guide widget
         self.guideWidget = QWidget()
         guideLayout = QVBoxLayout(self.guideWidget)
 
@@ -1769,20 +1787,20 @@ class MyApp(QMainWindow):
         guideLayout.addWidget(guideTitle)
 
         guideText = QLabel(
-            "This program is a GUI tool designed for machine learning beginners.\n\n"
+            "This program is a GUI tool for machine learning beginners.\n\n"
             "① Load a CSV file. (Each column contains Feature values (x), Sample names, and Label values (y).)\n"
-            "  If label values are not numeric, arbitrary numeric values are assigned. e.g. 0, 1, 2\n"
+            "  If label values are not numeric, arbitrary numeric values are assigned, e.g. 0, 1, 2.\n"
             "② Apply data scaling.\n"
             "③ Split the data into Train/Test sets.\n"
             "④ Select an algorithm (KNN, MLP, RF, SVM) and train the model.\n"
-            "⑤ Save the model or predict unknown samples.\n"
+            "⑤ You can save the model or predict Unknown Samples.\n"
             "See the example below for the CSV file format.\n"
         )
         guideText.setAlignment(Qt.AlignLeft)
         guideText.setWordWrap(True)
         guideLayout.addWidget(guideText)
 
-        # show example CSV
+        # Show sample CSV
         sampleTable = QTableWidget()
         sampleTable.setRowCount(4)
         sampleTable.setColumnCount(6)
@@ -1801,9 +1819,9 @@ class MyApp(QMainWindow):
 
         self.mainLayout.addWidget(self.guideWidget)
 
-        # viewer shown after loading a real CSV
+        # Viewer shown after loading an actual CSV
         self.csvViewer = CsvViewer()
-        self.csvViewer.hide()  # hidden initially
+        self.csvViewer.hide()  # hidden at first
         self.mainLayout.addWidget(self.csvViewer)
 
         self.mainTab.setLayout(self.mainLayout)
@@ -1814,24 +1832,24 @@ class MyApp(QMainWindow):
         guide_layout = QVBoxLayout(guide_frame)
         guide_label = QLabel(
             "<h3>📊 Data Scaling Guide</h3>"
-            "<p>Scaling adjusts the value range of each feature to improve model training performance.<br>"
+            "<p>Scaling adjusts the range of each feature to improve model training performance.<br>"
             "Choose an appropriate scaler based on the data characteristics and model type.</p>"
             "<ul>"
-            "<li><b>StandardScaler</b>: Standardize to mean 0 and standard deviation 1. A good default for most ML models.<br>"
-            "‣ Advantage: effective for normally distributed data.<br>"
-            "‣ Disadvantage: sensitive to outliers.</li><br>"
-            "<li><b>MinMaxScaler</b>: Scale to the [0, 1] range.<br>"
-            "‣ Advantage: can encourage faster convergence in neural networks and similar models.<br>"
-            "‣ Disadvantage: very sensitive to outliers.</li><br>"
-            "<li><b>RobustScaler</b>: Transform using the median and IQR (interquartile range).<br>"
-            "‣ Advantage: robust for data with many outliers.<br>"
-            "‣ Disadvantage: may reduce precision when the distribution is already close to normal.</li><br>"
-            "<li><b>MaxAbsScaler</b>: Scale each feature by its maximum absolute value so the max abs value becomes 1.<br>"
-            "‣ Advantage: preserves sparse matrices (sparse data).<br>"
-            "‣ Disadvantage: not ideal when positive and negative values are highly imbalanced.</li><br>"
-            "<li><b>Normalizer</b>: Scale each sample vector to unit length.<br>"
-            "‣ Advantage: suitable for text vectors and distance-based models such as KNN.<br>"
-            "‣ Disadvantage: does not normalize the distribution across features.</li>"
+            "<li><b>StandardScaler</b>: standardize to mean 0 and standard deviation 1. A good default for most ML models.<br>"
+            "‣ Pros: effective for approximately normally distributed data.<br>"
+            "‣ Cons: sensitive to outliers.</li><br>"
+            "<li><b>MinMaxScaler</b>: scale to the [0, 1] range.<br>"
+            "‣ Pros: can help neural networks converge faster.<br>"
+            "‣ Cons: very sensitive to outliers.</li><br>"
+            "<li><b>RobustScaler</b>: transform based on the median and IQR.<br>"
+            "‣ Pros: stable for data with many outliers.<br>"
+            "‣ Cons: may reduce precision when the distribution is already close to normal.</li><br>"
+            "<li><b>MaxAbsScaler</b>: scales each feature by its maximum absolute value.<br>"
+            "‣ Pros: preserves sparse matrices.<br>"
+            "‣ Cons: less suitable when positive/negative ranges are highly imbalanced.</li><br>"
+            "<li><b>Normalizer</b>: scales each sample vector to unit length.<br>"
+            "‣ Pros: suitable for text vectors or distance-based models such as KNN.<br>"
+            "‣ Cons: does not normalize the distribution across features.</li>"
             "</ul>"
         )
         guide_label.setWordWrap(True)
@@ -1841,7 +1859,7 @@ class MyApp(QMainWindow):
 
         layout.addWidget(guide_frame)
 
-        # add label showing the current scaling method
+        # add label showing current scaling method
         self.scalerStatusLabel = QLabel("Current Scaling Method: None")
         self.scalerStatusLabel.setStyleSheet("font-weight: bold; color: darkgreen;")
         layout.addWidget(self.scalerStatusLabel)
@@ -1854,7 +1872,7 @@ class MyApp(QMainWindow):
         layout = QVBoxLayout()
         desc_style = "color: #555; font-size: 10pt; margin-bottom: 4px;"
 
-        # function that wraps each item in a box (QFrame)
+        # function that wraps each item in a boxed QFrame
         def wrap_in_box(widget_list):
             frame = QFrame()
             frame.setFrameShape(QFrame.Box)
@@ -1876,16 +1894,16 @@ class MyApp(QMainWindow):
         self.hidden_layer_input.setPlaceholderText("50,50")
         self.hidden_layer_input.setFixedWidth(300)
         desc = QLabel(
-            "Specify the hidden-layer structure. <br>(Example: 100,50,30 → three hidden layers with 100, 50, and 30 neurons, respectively). <br>More neurons and layers can learn more complex patterns but increase the risk of overfitting.")
+            "Specify the hidden layer structure. <br>(Example: 100,50,30 means three hidden layers with 100, 50, and 30 neurons.) <br>More neurons and layers can learn more complex patterns, but they also increase the risk of overfitting.")
         desc.setStyleSheet(desc_style)
         left_col.addWidget(wrap_in_box([hidden_layer_label, self.hidden_layer_input, desc]))
 
-        # Alpha settings
+        # Alpha setting
         alpha_label = QLabel("Alpha (Regularization strength):")
         self.alpha_input = QLineEdit()
         self.alpha_input.setPlaceholderText("0.0001")
         self.alpha_input.setFixedWidth(300)
-        desc = QLabel("Limits the magnitude of weights to prevent overfitting. <br>Larger values make the model simpler, while smaller values make it more complex.")
+        desc = QLabel("Regularizes the weights to reduce overfitting. <br>Larger values make the model simpler; smaller values make it more complex.")
         desc.setStyleSheet(desc_style)
         left_col.addWidget(wrap_in_box([alpha_label, self.alpha_input, desc]))
 
@@ -1919,7 +1937,7 @@ class MyApp(QMainWindow):
         self.solver_input.setCurrentText('adam')
         self.solver_input.setFixedWidth(300)
         desc = QLabel(
-            "Weight optimization algorithm. <br>'adam': stable <br>'lbfgs': suitable for smaller datasets <br>'sgd': suitable for large datasets and allows more control over optimization")
+            "Weight optimization algorithm. <br>'adam': stable <br>'lbfgs': suitable for smaller datasets <br> 'sgd': suitable for large datasets and allows more control over optimization")
         desc.setStyleSheet(desc_style)
         right_col.addWidget(wrap_in_box([solver_label, self.solver_input, desc]))
 
@@ -1930,7 +1948,7 @@ class MyApp(QMainWindow):
         self.activation_input.setCurrentText('relu')
         self.activation_input.setFixedWidth(300)
         desc = QLabel(
-            "The activation function determines the form of the neuron output. <br>'relu': the most common and stable <br>'tanh': high training stability <br>'logistic': used in binary classification output layers or smaller networks <br>'identity': suitable for regression ")
+            "The activation function controls the output form of the neurons. <br>'relu': most common and stable <br> 'tanh': often provides stable training <br> 'logistic': used for binary classification output layers or small networks <br> 'identity': suitable for regression ")
         desc.setStyleSheet(desc_style)
         right_col.addWidget(wrap_in_box([activation_label, self.activation_input, desc]))
 
@@ -1939,17 +1957,17 @@ class MyApp(QMainWindow):
         self.learning_rate_input = QLineEdit()
         self.learning_rate_input.setPlaceholderText("0.001")
         self.learning_rate_input.setFixedWidth(300)
-        desc = QLabel("Controls the learning rate for weight updates. If it is too large training may be unstable, and if it is too small training becomes slow.")
+        desc = QLabel("Controls the weight update speed. If it is too large training becomes unstable; if it is too small training becomes slow.")
         desc.setStyleSheet(desc_style)
         right_col.addWidget(wrap_in_box([learning_rate_label, self.learning_rate_input, desc]))
         # Font settings area (shown in UI)
         font_box = QFrame()
         font_box.setFrameShape(QFrame.Box)
         font_box.setFrameShadow(QFrame.Sunken)
-        font_box.setFixedHeight(80)  # limit the overall box height
+        font_box.setFixedHeight(80)  # limit total box height
         font_layout = QVBoxLayout(font_box)
         font_layout.setContentsMargins(4, 2, 4, 2)  # minimize margins
-        font_layout.setSpacing(1)  # minimize spacing between widgets
+        font_layout.setSpacing(1)  # minimize widget spacing
 
         font_label = QLabel("Font settings:")
         font_label.setStyleSheet("font-size: 8pt; margin-bottom: 0px;")  # smaller font
@@ -2004,7 +2022,7 @@ class MyApp(QMainWindow):
         self.mlpCvRegButton.clicked.connect(self.runMLPRegressionCV)
         buttons_layout.addWidget(self.mlpCvRegButton)
 
-        # left-right layout
+        # Left-right layout
         main_columns = QHBoxLayout()
         main_columns.addLayout(left_col)
         main_columns.addSpacing(20)
@@ -2034,7 +2052,7 @@ class MyApp(QMainWindow):
 
         feature_names = list(X_train_numeric.columns)
 
-        # raw/scaled state was decided at the split stage, so do not add extra scaling here
+        # raw/scaled has already been decided at the split stage, so do not apply additional scaling here
         X_train_used = X_train_numeric.values
         X_test_used = X_test_numeric.values
 
@@ -2093,7 +2111,7 @@ class MyApp(QMainWindow):
         feature_importances = [(feature_names[idx], perm_importance.importances_mean[idx]) for idx in sorted_idx]
         self.showMLPFeatureImportances(feature_importances)
 
-        # ✅ save bundle
+        # bundle save
         self.models["MLP Classification"] = {
             "model": mlp,
             "scaler": self._get_bundle_scaler(),
@@ -2160,7 +2178,7 @@ class MyApp(QMainWindow):
         feature_importances = [(feature_names[idx], perm_importance.importances_mean[idx]) for idx in sorted_idx]
         self.showMLPFeatureImportances(feature_importances)
 
-        # ✅ save bundle
+        # bundle save
         self.models["MLP Regression"] = {
             "model": mlp,
             "scaler": self._get_bundle_scaler(),
@@ -2172,15 +2190,15 @@ class MyApp(QMainWindow):
     def showMLPFeatureImportances(self, feature_importances):
         dialog = QDialog(self)
         dialog.setWindowTitle("Feature Importances")
-        dialog.setGeometry(100, 100, 600, 400)  # make the window slightly larger
+        dialog.setGeometry(100, 100, 600, 400)  # set a slightly larger window size
 
         dialog_layout = QVBoxLayout(dialog)
 
         info_label = QLabel(
-            "<b>How feature importance is computed</b><br>"
-            "The MLP importance shown here is computed using scikit-learn's <code>permutation_importance</code>.<br>"
-            "Importance is defined by how much model performance decreases when the order of a feature's values is randomly shuffled (= performance drop).<br>"
-            "Larger values indicate greater importance, while values close to 0 or negative may indicate little effect or noise."
+            "<b>How feature importance is calculated</b><br>"
+            "MLP importance on this screen is calculated using scikit-learn's <code>permutation_importance</code>.<br>"
+            "Importance is defined by how much model performance drops when the values of a feature are shuffled at random.<br>"
+            "Larger values indicate greater importance; values near zero or negative may indicate weak influence or noise."
         )
         info_label.setWordWrap(True)
         dialog_layout.addWidget(info_label)
@@ -2264,27 +2282,27 @@ class MyApp(QMainWindow):
 
         desc_style = "color: #555; font-size: 10pt; margin-bottom: 4px;"
 
-        # --- Top: Random Forest description ---
+        # --- Top: add Random Forest description ---
         rf_overview = QLabel(
             "<h3>🌲 Random Forest (RF)</h3>"
-            "<p>Random Forest is an ensemble learning method that trains multiple decision trees to make predictions.<br>"
-            "It has a relatively low risk of overfitting and performs well on both classification and regression tasks.</p>"
+            "<p>Random Forest is an ensemble learning method that trains multiple decision trees and combines them for prediction.<br>"
+            "It has relatively low overfitting risk and often performs well on both classification and regression tasks.</p>"
         )
         rf_overview.setWordWrap(True)
         layout.addWidget(rf_overview)
 
-        # --- Parameter group box ---
+        # --- parameter group box ---
         groupBox = QFrame()
         groupBox.setFrameShape(QFrame.Box)
         groupBox.setFrameShadow(QFrame.Sunken)
         groupBoxLayout = QVBoxLayout(groupBox)
 
         params = [
-            ("Max Depth:", 20, 1, 99999, "Limits the maximum depth of each tree.<br>Larger values make the model more complex, while smaller values make it simpler."),
-            ("N Estimators:", 20, 1, 99999, "Number of trees to generate.<br>More trees usually give more stable results but increase training time."),
-            ("Min Samples Leaf:", 1, 1, 99999, "Minimum number of samples required in each leaf node.<br>Larger values simplify the model and reduce overfitting."),
-            ("Min Samples Split:", 2, 2, 99999, "Minimum number of samples required to split a node.<br>Larger values reduce tree depth and make the model simpler."),
-            ("Random State:", 0, 0, 99999, "Seed value used to control randomness.<br>Using the same value reproduces the same results every time.")
+            ("Max Depth:", 20, 1, 99999, "Limits the maximum depth of each tree.<br>Larger values make the model more complex; smaller values make it simpler."),
+            ("N Estimators:", 20, 1, 99999, "Number of trees to build.<br>More trees usually give more stable results, but training takes longer."),
+            ("Min Samples Leaf:", 1, 1, 99999, "Minimum number of samples required in each leaf node.<br>Larger values simplify the model and can reduce overfitting."),
+            ("Min Samples Split:", 2, 2, 99999, "Minimum number of samples required to split a node.<br>Larger values reduce tree depth and produce a simpler model."),
+            ("Random State:", 0, 0, 99999, "Seed value for controlling randomness.<br>Using the same value reproduces the same result.")
         ]
 
         self.param_inputs = {}
@@ -2315,7 +2333,7 @@ class MyApp(QMainWindow):
         groupBoxLayout.setSpacing(15)
         layout.addWidget(groupBox)
 
-        # --- Button area ---
+        # --- button area ---
         buttons_layout = QHBoxLayout()
         self.createRFClassModelButton = QPushButton("Create RF Classification Model")
         self.createRFClassModelButton.setFont(QFont('Arial', 12, QFont.Bold))
@@ -2369,7 +2387,7 @@ class MyApp(QMainWindow):
 
         right_side_layout.addWidget(font_box)
 
-        # --- Merge everything ---
+        # --- merge everything ---
         main_layout = QHBoxLayout()
         main_layout.addLayout(layout)
         main_layout.addLayout(right_side_layout)
@@ -2381,7 +2399,7 @@ class MyApp(QMainWindow):
     # ------------------------------
     def runRFClassificationCV(self):
         try:
-            # Parameter spin boxes created in the RF tab are stored in self.param_inputs.
+            # Parameter spin boxes created in the RF tab are saved in self.param_inputs.
             max_depth = int(self.param_inputs["Max Depth:"].value())
             n_estimators = int(self.param_inputs["N Estimators:"].value())
             min_samples_leaf = int(self.param_inputs["Min Samples Leaf:"].value())
@@ -2470,7 +2488,7 @@ class MyApp(QMainWindow):
         self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test,
                                      "RF Classification: Observed vs Predicted")
 
-        # ✅ save bundle
+        # bundle save
         self.models["RF Classification"] = {
             "model": rf_clf,
             "scaler": self._get_bundle_scaler(),
@@ -2518,7 +2536,7 @@ class MyApp(QMainWindow):
         self.showRFRegResults(r2_train, r2_test, mse_test, rmse_test, variable_importances)
         self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test, "RF Regression: Observed vs Predicted")
 
-        # ✅ save bundle
+        # bundle save
         self.models["RF Regression"] = {
             "model": rf_regr,
             "scaler": self._get_bundle_scaler(),
@@ -2542,7 +2560,7 @@ class MyApp(QMainWindow):
         dialog_layout.addWidget(results_label)
 
         # Variable importance note
-        var_imp_info = QLabel("Variable importance is shown directly from scikit-learn RandomForest's `feature_importances_`. It is calculated based on how much impurity is reduced on average during tree splitting (= MDI, often called 'Gini importance'). Larger values mean the model split more often or more strongly on that feature and used it more for prediction. ")
+        var_imp_info = QLabel("Variable importance is displayed directly from scikit-learn RandomForest's `feature_importances_`. It is based on how much impurity is reduced on average by tree splits (MDI, often called 'Gini importance'). Larger values mean the model used that feature more often or more strongly in splits contributing to prediction. ")
         var_imp_info.setWordWrap(True)
         dialog_layout.addWidget(var_imp_info)
 
@@ -2579,7 +2597,7 @@ class MyApp(QMainWindow):
         dialog_layout.addWidget(results_label)
 
         # Variable importance note
-        var_imp_info = QLabel("Variable importance is shown directly from scikit-learn RandomForest's `feature_importances_`. It is calculated based on how much impurity is reduced on average during tree splitting (= MDI, often called 'Gini importance'). Larger values mean the model split more often or more strongly on that feature and used it more for prediction. ")
+        var_imp_info = QLabel("Variable importance is displayed directly from scikit-learn RandomForest's `feature_importances_`. It is based on how much impurity is reduced on average by tree splits (MDI, often called 'Gini importance'). Larger values mean the model used that feature more often or more strongly in splits contributing to prediction. ")
         var_imp_info.setWordWrap(True)
         dialog_layout.addWidget(var_imp_info)
 
@@ -2654,14 +2672,14 @@ class MyApp(QMainWindow):
         info_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(info_label)
 
-        # model load button
+        # model load buttons
         load_model_button = QPushButton("Load Saved Model")
         load_model_button.setFont(QFont('Arial', 12, QFont.Bold))
         load_model_button.setStyleSheet("QPushButton { padding: 8px; border-radius: 8px; border: 2px solid #000000; }")
         load_model_button.clicked.connect(self.loadPreviousModel)
         layout.addWidget(load_model_button)
 
-        # unknown CSV load button
+        # Unknown CSV load button
         load_unknown_button = QPushButton("Load Unknown Data (CSV)")
         load_unknown_button.setFont(QFont('Arial', 12, QFont.Bold))
         load_unknown_button.setStyleSheet(
@@ -2669,7 +2687,7 @@ class MyApp(QMainWindow):
         load_unknown_button.clicked.connect(self.loadUnknownSample)
         layout.addWidget(load_unknown_button)
 
-        # prediction result table
+        # prediction results table
         self.prediction_table = QTableWidget()
         layout.addWidget(self.prediction_table)
 
@@ -2710,8 +2728,8 @@ class MyApp(QMainWindow):
                 QMessageBox.warning(self, "Error", "No model found in bundle.")
                 return
 
-            # Use only the feature names actually required by the model as the reference.
-            # In comparisons, ignore only leading/trailing spaces; other differences (such as .1) are treated as different features.
+            # use only the feature names actually required by the model as the reference
+            # during comparison, ignore only leading/trailing spaces; treat any other difference (.1, etc.) as a different feature
             if feature_names is not None:
                 saved_feature_names = [str(c).strip() for c in list(feature_names)]
             elif hasattr(model, "feature_names_in_"):
@@ -2719,22 +2737,22 @@ class MyApp(QMainWindow):
             else:
                 saved_feature_names = None
 
-            # Treat the Sample column as an identifier only when the model does not actually require it.
+            # treat the Sample column as an identifier only when the model does not actually require it
             if saved_feature_names is not None and 'Sample' in unknown_df.columns and 'Sample' not in saved_feature_names:
                 sample_series = unknown_df['Sample']
                 unknown_df = unknown_df.drop(columns=['Sample'])
             else:
                 sample_series = pd.Series([f"Sample {i + 1}" for i in range(len(unknown_df))])
 
-            # Trim only whitespace in column names so warning checks and actual reindexing use the same rule
+            # trim whitespace in column names so warning comparison and actual reindexing use the same standard
             unknown_df = unknown_df.copy()
             unknown_df.columns = [str(c).strip() for c in unknown_df.columns]
 
-            # force numeric
+            # force numeric conversion
             unknown_df = unknown_df.apply(pd.to_numeric, errors='coerce')
             data_to_scale = unknown_df
 
-            # ③ check only the expected features that are missing from the loaded CSV
+            # ③ check only the features expected by the trained model that are missing in the loaded CSV
             if saved_feature_names is not None:
                 unknown_feature_names = [str(c).strip() for c in list(data_to_scale.columns)]
 
@@ -2766,7 +2784,7 @@ class MyApp(QMainWindow):
             else:
                 print("[Warning] Model has no saved feature names — predictions may be unreliable!")
 
-            # ④ apply saved scaler
+            # ④ apply the saved scaler
             if scaler:
                 data_scaled = scaler.transform(data_to_scale)
                 data_scaled = pd.DataFrame(data_scaled, columns=data_to_scale.columns, index=data_to_scale.index)
@@ -2802,17 +2820,17 @@ class MyApp(QMainWindow):
             print("scaler:", type(scaler).__name__ if scaler else None, "reducer:",
                   type(reducer).__name__ if reducer else None)
 
-            # 1) final unknown input (after applying scaler/reducer)
+            # 1) final unknown input (after scaler/reducer application)
             incoming = data_used.values if hasattr(data_used, "values") else np.asarray(data_used)
 
-            # 2) preprocess the train data the same way with the saved scaler/reducer for comparison
+            # 2) preprocess train data the same way with the saved scaler/reducer and compare
             X_train_df = pd.read_csv(resource_path("Temp/X_train.csv"))
 
-            # remove Sample + force numeric + fill NaN with 0
+            # remove Sample + force numeric conversion + replace NaN with 0
             X_train_df = X_train_df.drop(columns=["Sample"], errors="ignore")
             X_train_df = X_train_df.apply(pd.to_numeric, errors="coerce").fillna(0)
 
-            # align feature order (missing ones are filled with 0)
+            # align feature order (missing columns are filled with 0)
             if feature_names is not None:
                 X_train_df = X_train_df.reindex(columns=feature_names).fillna(0)
 
@@ -2831,7 +2849,7 @@ class MyApp(QMainWindow):
             print("incoming shape:", incoming.shape)
             print("X_train_proc shape:", X_train_proc.shape)
 
-            # 3) calculate distances: which train row is closest to each unknown row
+            # 3) distance calculation: find which training row is closest to each unknown row
             d = np.linalg.norm(X_train_proc[None, :, :] - incoming[:, None, :], axis=2)
             min_d = d.min(axis=1)
             argmin = d.argmin(axis=1)
@@ -2839,21 +2857,21 @@ class MyApp(QMainWindow):
             print("min distance per unknown row:", min_d)
             print("closest train row index:", argmin)
 
-            # 4) decision rule: if the distance is almost 0, treat them as identical
+            # 4) decision: treat it as identical when the distance is nearly 0
             tol = 1e-9
             same_mask = min_d <= tol
             print("same_mask (min_d<=1e-9):", same_mask)
             print("how many exactly same?:", same_mask.sum(), "/", len(same_mask))
 
-            # ⑥ predict
+            # ⑥ prediction
             predictions = model.predict(data_used)
 
-            # ⑦ apply inverse label mapping (restore string labels)
+            # ⑦ apply reverse label mapping (restore text labels)
             if label_mapping:
                 inverse_map = {v: k for k, v in label_mapping.items()}
                 predictions = [inverse_map.get(p, p) for p in predictions]
 
-            # ⑧ show results
+            # ⑧ display results
             self.prediction_table.clear()
             self.prediction_table.setColumnCount(2)
             self.prediction_table.setHorizontalHeaderLabels(["Sample", "Prediction"])
@@ -2932,7 +2950,7 @@ class MyApp(QMainWindow):
             for j, cell in enumerate(row):
                 self.unknownTable.setItem(i, j, QTableWidgetItem(str(cell)))
 
-    # applyModelReducer (align by feature name)
+    # applyModelReducer (align by feature names)
     # ============================================================
     def applyModelReducer(self):
         try:
@@ -2952,7 +2970,7 @@ class MyApp(QMainWindow):
                 QMessageBox.warning(self, "Reducer Error", f"No reducer found for '{model_name}'.")
                 return
 
-            # align by feature name
+            # align by feature names
             unknown_df = pd.DataFrame(self.scaled_unknown_data, columns=self.unknown_data.columns)
             if hasattr(self, 'feature_names'):
                 compare_expected = _kuquickml_strip_non_feature_columns(list(self.feature_names))
@@ -2962,7 +2980,7 @@ class MyApp(QMainWindow):
                     QMessageBox.warning(self, "Feature Mismatch",
                                         f"The following features are missing in unknown data:\n{', '.join(missing)}")
                     return
-                # reorder by feature name
+                # reorder by feature names
                 unknown_df = unknown_df.loc[:, compare_expected]
 
             reduced = reducer.transform(unknown_df)
@@ -2986,7 +3004,7 @@ class MyApp(QMainWindow):
 
     def predictModel(self):
         """
-        During prediction, align by feature name before applying the reducer and model
+        Align by feature names during prediction, then run reducer and model prediction
         """
         if not hasattr(self, 'unknown_data'):
             QMessageBox.warning(self, "Data Error", "Please load unknown sample CSV first.")
@@ -3001,7 +3019,7 @@ class MyApp(QMainWindow):
             QMessageBox.warning(self, "Model Selection Error", "Please select at least one trained model.")
             return
 
-        # align by feature name
+        # align by feature names
         unknown_df = pd.DataFrame(self.scaled_unknown_data, columns=self.unknown_data.columns)
         if hasattr(self, 'feature_names'):
             compare_expected = _kuquickml_strip_non_feature_columns(list(self.feature_names))
@@ -3045,7 +3063,7 @@ class MyApp(QMainWindow):
                 QMessageBox.warning(self, "Prediction Error", f"Error predicting with '{model_name}':\n{e}")
                 continue
 
-        # display results (keep UI unchanged)
+        # display results (keep UI behavior)
         sample_names = self.get_sample_names_from_unknown_data()
         if predictions:
             self.showPredictions(predictions, sample_names)
@@ -3152,28 +3170,28 @@ class MyApp(QMainWindow):
         guide_layout = QVBoxLayout(guide_frame)
 
         guide_label = QLabel(
-            "<h3>🧮 KNN (K-Nearest Neighbors) Model </h3>"
-            "<p>KNN predicts when a new data point is given by "
-            "finding the K nearest neighbors from the existing data "
-            "and using their majority vote (classification) or average (regression).<br>"
-            "The model does not learn explicit parameters from the data; instead, it calculates distances at prediction time "
-            "which is why it is called a 'Lazy Learning' method.</p>"
+            "<h3>🧮 KNN (K-Nearest Neighbors) model </h3>"
+            "<p>When KNN receives a new data point, "
+            "it finds the K nearest neighbors among the existing data "
+            "and predicts by majority vote (classification) or average (regression).<br>"
+            "The model does not learn explicit parameters from the data; instead, it computes distances at prediction time in a "
+            "“lazy learning” manner.</p>"
         )
         guide_label.setWordWrap(True)
         guide_layout.addWidget(guide_label)
 
         dimreduce_label = QLabel(
-            "<h4>📉 Comparison of Dimensionality Reduction Methods</h4>"
+            "<h4>📉 Comparison of dimensionality reduction methods</h4>"
             "<ul>"
             "<li><b>PCA (Principal Component Analysis)</b>: based on <i>unsupervised learning</i>. "
-            "It reduces dimensionality by redefining axes along directions of maximum variance in the data.<br>"
-            "‣ It does not use class information and is useful for visualization or noise reduction.</li><br>"
+            "It reduces dimensionality by redefining axes along directions of maximum variance.<br>"
+            "‣ It does not use class labels and is useful for visualization or noise reduction.</li><br>"
             "<li><b>LDA (Linear Discriminant Analysis)</b>: based on <i>supervised learning</i>. "
             "It reduces dimensionality by finding axes that maximize separation between classes.<br>"
-            "‣ For labeled classification problems, it can visualize class boundaries more clearly.</li><br>"
+            "‣ It can visualize class boundaries more clearly in labeled classification problems.</li><br>"
             "<li><b>NCA (Neighborhood Components Analysis)</b>: based on <i>supervised learning</i>. "
             "It learns a feature space that maximizes KNN classification performance.<br>"
-            "‣ It is more flexible than LDA and can perform better even with non-linear data relationships.</li>"
+            "‣ It is more flexible than LDA and can perform better on nonlinear relationships.</li>"
             "</ul>"
         )
         dimreduce_label.setWordWrap(True)
@@ -3336,20 +3354,20 @@ class MyApp(QMainWindow):
     # 5-fold CV runners (KNN)
     # ------------------------------
     def showKNNPermutationImportance(self, reducer, X_eval, y_eval, model, feature_names, title_prefix="KNN", task="classification"):
-        """KNN does not provide feature importance as an internal model parameter,
-        so importance is computed and displayed using permutation importance (the drop in score when a feature is shuffled).
+        """KNN does not provide feature importance through internal model parameters,
+        so importance is computed and displayed using permutation importance (the score drop caused by shuffling a feature).
 
-        - X_eval is expected to be in the original feature space (DataFrame).
-        - If a reducer exists, it is applied internally with reducer.transform before passing data to the model.
+        - X_eval is expected to be a DataFrame in the original feature space.
+        - If a reducer exists, data is transformed internally with reducer.transform before being passed to the model.
         """
         try:
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Information)
             msg.setWindowTitle("Feature Importance")
             msg.setText(
-                f"{title_prefix} does not directly compute feature importance from internal model values.\n\n"
-                "You can compute and display importance using permutation importance.\n"
-                "(Importance is computed from how much the score drops when a feature is shuffled.)"
+                f"{title_prefix} does not calculate feature importance directly from internal model values.\n\n"
+                "Permutation importance can be used to calculate and display importance.\n"
+                "(Importance is calculated by how much the performance score drops when a feature is shuffled.)"
             )
             msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
             if msg.exec_() != QMessageBox.Ok:
@@ -3414,7 +3432,7 @@ class MyApp(QMainWindow):
             layout = QVBoxLayout(dialog)
 
             info = QLabel(
-                f"{title_prefix} feature importance was computed using permutation importance.\n"
+                f"{title_prefix} Feature importance was calculated using permutation importance.\n"
                 "Importance is calculated based on how much the performance score decreases when each feature is shuffled."
             )
             info.setWordWrap(True)
@@ -3474,17 +3492,22 @@ class MyApp(QMainWindow):
             return
 
         method_name, reducer = selected_method
-        reducer.fit(X_train_numeric.values, y_train)
-        X_train_embedded = reducer.transform(X_train_numeric.values)
-        X_test_embedded = reducer.transform(X_test_numeric.values)
+        if reducer is not None:
+            reducer.fit(X_train_numeric.values, y_train)
+            X_train_embedded = reducer.transform(X_train_numeric.values)
+            X_test_embedded = reducer.transform(X_test_numeric.values)
+        else:
+            X_train_embedded = X_train_numeric.values
+            X_test_embedded = X_test_numeric.values
 
         knn.fit(X_train_embedded, y_train)
         accuracy = knn.score(X_test_embedded, y_test)
-        self.plotResults(method_name,
-                         X_train_embedded, y_train,
-                         X_test_embedded, y_test,
-                         n_neighbors,
-                         score_value=accuracy, score_label="Test accuracy")
+        if hasattr(X_train_embedded, "shape") and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+            self.plotResults(method_name,
+                             X_train_embedded, y_train,
+                             X_test_embedded, y_test,
+                             n_neighbors,
+                             score_value=accuracy, score_label="Test accuracy")
 
         y_pred_test = knn.predict(X_test_embedded)
         cm = confusion_matrix(y_test, y_pred_test)
@@ -3501,17 +3524,17 @@ class MyApp(QMainWindow):
 
         # (Removed) Duplicate scatter plot call
         self.showConfusionMatrix(cm_df)
-        # ✅ save bundle (unified for Save Model / Load Previous Model / Unknown prediction)
+        # save bundle (unified for Save Model / Load Previous Model / Unknown prediction)
         feature_names = list(X_train_numeric.columns)
         self.showKNNPermutationImportance(reducer, X_test_numeric, y_test, knn, feature_names, title_prefix="KNN Classification", task="classification")
 
 
         self.models["KNN Classification"] = {
             "model": knn,
-            "scaler": self._get_bundle_scaler(),  # save the scaler only when the split used scaled data
+            "scaler": self._get_bundle_scaler(),  # save the scaler only when split used scaled data
             "reducer": reducer,  # PCA/LDA/NCA
-            "feature_names": feature_names,  # lock feature order
-            "label_mapping": self._get_label_mapping()  # for restoring string labels (only when present)
+            "feature_names": feature_names,  # fix feature order
+            "label_mapping": self._get_label_mapping()  # for restoring string labels (when available)
         }
 
         if reducer:
@@ -3537,9 +3560,13 @@ class MyApp(QMainWindow):
             return
 
         method_name, reducer = selected_method
-        reducer.fit(X_train_numeric.values, y_train)
-        X_train_embedded = reducer.transform(X_train_numeric.values)
-        X_test_embedded = reducer.transform(X_test_numeric.values)
+        if reducer is not None:
+            reducer.fit(X_train_numeric.values, y_train)
+            X_train_embedded = reducer.transform(X_train_numeric.values)
+            X_test_embedded = reducer.transform(X_test_numeric.values)
+        else:
+            X_train_embedded = X_train_numeric.values
+            X_test_embedded = X_test_numeric.values
 
         knn.fit(X_train_embedded, y_train)
 
@@ -3548,11 +3575,12 @@ class MyApp(QMainWindow):
         y_pred_test = knn.predict(X_test_embedded)
         r2_train = r2_score(y_train, y_pred_train)
         r2_test = r2_score(y_test, y_pred_test)
-        self.plotResults(method_name,
-                         X_train_embedded, y_train,
-                         X_test_embedded, y_test,
-                         n_neighbors,
-                         score_value=r2_test, score_label="Test R2")
+        if hasattr(X_train_embedded, "shape") and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+            self.plotResults(method_name,
+                             X_train_embedded, y_train,
+                             X_test_embedded, y_test,
+                             n_neighbors,
+                             score_value=r2_test, score_label="Test R2")
 
         self.plotObservedVsPredicted(
             y_train, y_pred_train,
@@ -3560,15 +3588,15 @@ class MyApp(QMainWindow):
             f"KNN Regression Observed vs Predicted\nTrain R2={r2_train:.3f}, Test R2={r2_test:.3f}"
         )
 
-        # ✅ save bundle (unified for Save Model / Load Previous Model / Unknown prediction)
+        # save bundle (unified for Save Model / Load Previous Model / Unknown prediction)
         feature_names = list(X_train_numeric.columns)
         self.showKNNPermutationImportance(reducer, X_test_numeric, y_test, knn, feature_names, title_prefix="KNN Regression", task="regression")
 
 
         self.models["KNN Regression"] = {
             "model": knn,
-            "scaler": self._get_bundle_scaler(),  # save the scaler only when the split used scaled data
-            "reducer": reducer,  # PCA/LDA/NCA (leave unchanged if None)
+            "scaler": self._get_bundle_scaler(),  # save the scaler only when split used scaled data
+            "reducer": reducer,  # PCA/LDA/NCA (leave as-is when None)
             "feature_names": feature_names,
             "label_mapping": None  # regression does not need label mapping
         }
@@ -3579,7 +3607,7 @@ class MyApp(QMainWindow):
     def plotResults(self, name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors,
                     score_value=None, score_label=None):
 
-        plt.figure() # KNN 2D result scatter plot
+        plt.figure() #KNN 2D result scatter plot
         ax = plt.gca()
         unique_labels_train = np.unique(y_train)
         unique_labels_test = np.unique(y_test)
@@ -3642,7 +3670,7 @@ class MyApp(QMainWindow):
         ax.set_ylabel('Predicted')
         ax.set_title(title)
 
-        # add legend and make it draggable
+        # add a legend and make it draggable
         legend = ax.legend()
         legend.set_draggable(True)
 
@@ -3656,11 +3684,11 @@ class MyApp(QMainWindow):
                 f'Training R2: {r2_score(y_train, y_pred_train):.3f}\nTest R2: {r2_score(y_test, y_pred_test):.3f}\nMSE: {mean_squared_error(y_test, y_pred_test):.3f}\nRMSE: {np.sqrt(mean_squared_error(y_test, y_pred_test)):.3f}',
                 transform=ax.transAxes, fontsize=12, verticalalignment='top')
 
-        # create and store FigureCanvas object
+        # create and save the FigureCanvas object
         figure_canvas = FigureCanvas(fig)
-        self.figure_canvas = figure_canvas  # store figure_canvas as an instance attribute
+        self.figure_canvas = figure_canvas  # save figure_canvas as an instance attribute
 
-        # create a dialog and show the plot
+        # create a dialog and display the plot
         dialog = QDialog(self)
         dialog.setWindowTitle("Observed vs Predicted")
         dialog.setGeometry(100, 100, 800, 600)
@@ -3675,10 +3703,10 @@ class MyApp(QMainWindow):
         dialog.setLayout(dialog_layout)
         dialog.setWindowModality(Qt.NonModal)
         dialog.show()
-        # store the dialog as an instance attribute (so it can be closed next time)
+        # save the dialog as an instance attribute (so it can be closed next time)
         self.observed_vs_predicted_dialog = dialog
 
-        # close the current matplotlib plot to avoid duplicate display
+        # close the current matplotlib plot to prevent duplicate display
         plt.close(fig)
 
     def getSelectedDimReductionMethod(self):
@@ -3688,6 +3716,8 @@ class MyApp(QMainWindow):
             return "LDA", LDA(n_components=2)
         elif hasattr(self, "ncaCheckBox") and self.ncaCheckBox.isChecked():
             return "NCA", NCA(n_components=2, max_iter=100, tol=1e-5, random_state=42)
+        elif hasattr(self, "noneCheckBox") and self.noneCheckBox.isChecked():
+            return "None", None
         return None
 
     def showConfusionMatrix(self, cm_df):
@@ -3753,7 +3783,7 @@ class MyApp(QMainWindow):
         if not hasattr(self, "rawDataRadioButton") or not hasattr(self, "scaledDataRadioButton"):
             QMessageBox.information(
                 self,
-                "CV Guide",
+                "CV guide",
                 "Please load a CSV data file first, then run Data Split."
             )
             return False
@@ -3779,18 +3809,18 @@ class MyApp(QMainWindow):
         desc_map = {
             "StratifiedKFold (classification)": (
                 "This is the most commonly used 5-fold method for classification.\n"
-                "It splits the data so that the class ratio stays as similar as possible in each fold (useful for imbalanced data)."
+                "It splits the data so that class ratios stay as similar as possible in each fold, which is helpful for imbalanced data."
             ),
             "KFold (general)": (
                 "This is the most basic 5-fold method.\n"
-                "It splits the data evenly in order (or according to the shuffle setting) without considering label ratios."
+                "It splits the data evenly in order (or according to shuffle settings) without considering label ratios."
             ),
             "GroupKFold (grouped samples)": (
-                "If data from the same entity (patient/user/sample ID) is mixed between training and validation, data leakage can occur.\n"
-                "GroupKFold splits the data so that the same group appears in only one fold. (e.g. patient_id)"
+                "If data from the same entity (patient/user/sample ID) is mixed between training and validation, leakage can occur.\n"
+                "GroupKFold splits the data so that each group appears in only one fold. (Example: patient_id)"
             ),
             "TimeSeriesSplit (time order)": (
-                "This is a 5-fold method for time-series data where temporal order matters.\n"
+                "This 5-fold method is for time-series or time-ordered data.\n"
                 "It trains on the past and validates on the future, without using shuffle."
             ),
         }
@@ -4075,8 +4105,8 @@ class MyApp(QMainWindow):
         self.randomSelectLabel = QLabel("Random Select Options:")
         self.stratifyCheckBox = QCheckBox("Stratify")
         self.stratifyHelpLabel = QLabel(
-            "→ Stratify splits the data so that each class ratio stays the same in the training/test sets.<br>"
-            "   Use this to preserve class distribution in imbalanced datasets."
+            "→ Stratify splits the data so class ratios stay the same in the training and test sets.<br>"
+            "   Use it to preserve class distribution in imbalanced datasets."
         )
         self.stratifyHelpLabel.setStyleSheet("color: gray; font-size: 11px; margin-left: 20px;")
         self.testSetRatioLabel = QLabel("Enter the test set ratio (0-1):")
@@ -4088,7 +4118,7 @@ class MyApp(QMainWindow):
         self.randomStateInput.setValidator(QDoubleValidator(0, 9999, 0))
         self.randomStateInput.setText("0")
         self.randomStateHelpLabel = QLabel(
-            "→ If the Random State value is the same, the same data will be selected as the test set each time.<br>"
+            "→ If Random State is the same, the same data will be selected for the test set every time.<br>"
             "   Changing the value changes the data split."
         )
         self.randomStateHelpLabel.setStyleSheet("color: gray; font-size: 11px; margin-left: 20px;")
@@ -4134,7 +4164,7 @@ class MyApp(QMainWindow):
         self.dataSplitTab.setLayout(layout)
 
     def _get_bundle_scaler(self):
-        # save the scaler only when the split used scaled data
+        # save the scaler together only when scaled data was used in split
         return self.scaler if getattr(self, "last_split_used_scaled", False) else None
 
     def _get_label_mapping(self):
@@ -4206,7 +4236,7 @@ class MyApp(QMainWindow):
         for i in range(len(X_train)):
             for j in range(X_train.shape[1]):
                 value = X_train.iloc[i, j]
-                # for numbers, show up to 4 decimal places; for integers, show no decimals
+                # for numeric values, show up to 4 decimal places; show integers without decimals
                 if isinstance(value, float):
                     formatted_value = f"{int(value)}" if value.is_integer() else f"{value:.4f}"
                 else:
@@ -4233,7 +4263,7 @@ class MyApp(QMainWindow):
         for i in range(len(X_test)):
             for j in range(X_test.shape[1]):
                 value = X_test.iloc[i, j]
-                # for numbers, show up to 4 decimal places; for integers, show no decimals
+                # for numeric values, show up to 4 decimal places; show integers without decimals
                 if isinstance(value, float):
                     formatted_value = f"{int(value)}" if value.is_integer() else f"{value:.4f}"
                 else:
@@ -4249,7 +4279,7 @@ class MyApp(QMainWindow):
             self.testSetWidget.setItem(i, X_test.shape[1], QTableWidgetItem(formatted_value))
 
     def loadCsv(self, checked=False):
-        # QAction.triggered passes bool(checked), so the checked argument must be accepted
+        # QAction.triggered passes a bool(checked), so the checked argument must be accepted
         options = QFileDialog.Options()
         filename, _ = QFileDialog.getOpenFileName(
             self, "Open CSV File", "",
@@ -4259,7 +4289,7 @@ class MyApp(QMainWindow):
             return
 
         try:
-            # use CsvViewer loading routine (including ColumnRoleDialog)
+            # use CsvViewer's loading routine (including ColumnRoleDialog)
             self.csvViewer.loadCsv(filename)
 
             # UI: hide the guide and show the viewer (can be removed if desired)
@@ -4267,15 +4297,15 @@ class MyApp(QMainWindow):
                 self.guideWidget.hide()
             self.csvViewer.show()
 
-            # save the files required by splitData into the Temp folder
+            # save the files needed by splitData into the Temp folder
             output_dir = resource_path('Temp')
             os.makedirs(output_dir, exist_ok=True)
 
-            # original_X.csv : Sample + features
+            # original_X.csv: Sample + Features
             if getattr(self.csvViewer, "original_data", None) is not None:
                 self.csvViewer.original_data.to_csv(os.path.join(output_dir, "original_X.csv"), index=False)
 
-            # scaled_y.csv : labels only (the name is kept because splitData reads scaled_y.csv)
+            # scaled_y.csv: Labels only (the name is kept because splitData reads scaled_y.csv)
             if getattr(self.csvViewer, "y", None) is not None:
                 pd.DataFrame(self.csvViewer.y, columns=["Label"]).to_csv(os.path.join(output_dir, "scaled_y.csv"),
                                                                          index=False)
@@ -4297,7 +4327,7 @@ class MyApp(QMainWindow):
     def show_scaled_data(self, scaled_X_df, y, headers):
         self.scaledDataWidget.clear()
         self.scaledDataWidget.setRowCount(len(scaled_X_df))
-        self.scaledDataWidget.setColumnCount(len(headers) + 2)  # including sample name and target
+        self.scaledDataWidget.setColumnCount(len(headers) + 2)  # including sample names and target
         self.scaledDataWidget.setHorizontalHeaderLabels(["Sample"] + headers + ["Label"])
 
         for i, row in scaled_X_df.iterrows():
@@ -4309,21 +4339,21 @@ class MyApp(QMainWindow):
                 formatted_sample = str(sample_value)
             self.scaledDataWidget.setItem(i, 0, QTableWidgetItem(formatted_sample))
 
-            # features
+            # feature
             for j, cell in enumerate(row[1:], start=1):
                 if isinstance(cell, float):
-                    formatted_value = f"{int(cell)}" if cell.is_integer() else f"{cell:.4f}"  # distinguish integers from floats
+                    formatted_value = f"{int(cell)}" if cell.is_integer() else f"{cell:.4f}"  # distinguish between integer and float
                 elif isinstance(cell, int):
-                    formatted_value = f"{cell}"  # when it is an integer
+                    formatted_value = f"{cell}"  # if integer
                 else:
                     formatted_value = str(cell)  # otherwise
                 self.scaledDataWidget.setItem(i, j, QTableWidgetItem(formatted_value))
 
             # target (Label)
             if isinstance(y[i], float):
-                formatted_label = f"{int(y[i])}" if y[i].is_integer() else f"{y[i]:.4f}"  # distinguish integers from floats
+                formatted_label = f"{int(y[i])}" if y[i].is_integer() else f"{y[i]:.4f}"  # distinguish between integer and float
             elif isinstance(y[i], int):
-                formatted_label = f"{y[i]}"  # when it is an integer
+                formatted_label = f"{y[i]}"  # if integer
             else:
                 formatted_label = str(y[i])  # otherwise
             self.scaledDataWidget.setItem(i, len(headers) + 1, QTableWidgetItem(formatted_label))  # target
@@ -4365,7 +4395,7 @@ class CsvViewer(QWidget):
             data['Sample'] = range(1, len(data) + 1)
             sample_column_name = 'Sample'
 
-        # handle Label (use as-is if numeric, otherwise map it)
+        # Handle Label (use numeric values directly; map text labels)
         if pd.api.types.is_numeric_dtype(data[label_column_name]):
             y = data[label_column_name].to_numpy()
             self.label_mapping = None
@@ -4385,7 +4415,7 @@ class CsvViewer(QWidget):
         for col in feature_columns:
             data[col] = pd.to_numeric(data[col], errors='coerce')
 
-        # normalize column names
+        # standardize column names
         data = data.rename(columns={sample_column_name: 'Sample', label_column_name: 'Label'})
 
         # save
@@ -4818,7 +4848,7 @@ def _kuquickml_fill_compare_table(table, rows, task):
 
 def _kuquickml_setup_compare_tab(self):
     layout = QVBoxLayout()
-    note1 = QLabel('Compare the Train / Test / CV performance of saved models. Load multiple model files and click the compare button.')
+    note1 = QLabel('Compare the Train / Test / CV performance of saved models. Load multiple model files, then click the compare button.')
     note2 = QLabel('Classification models are compared with classification models, and regression models with regression models.')
     note3 = QLabel('Multiclass ROC-AUC is calculated using the One-vs-Rest (OVR) strategy with macro averaging.')
     note1.setWordWrap(True)
@@ -4829,10 +4859,10 @@ def _kuquickml_setup_compare_tab(self):
     layout.addWidget(note3)
 
     btn_layout = QHBoxLayout()
-    self.compareLoadModelsBtn = QPushButton('Load Model Files')
-    self.compareRunBtn = QPushButton('Run Comparison')
-    self.compareCopyBtn = QPushButton('Copy All Results')
-    self.compareSaveBtn = QPushButton('Save Results CSV')
+    self.compareLoadModelsBtn = QPushButton('Load model files')
+    self.compareRunBtn = QPushButton('Run comparison')
+    self.compareCopyBtn = QPushButton('Copy all results')
+    self.compareSaveBtn = QPushButton('Save results as CSV')
     self.compareLoadModelsBtn.clicked.connect(lambda: _kuquickml_load_compare_models(self))
     self.compareRunBtn.clicked.connect(lambda: _kuquickml_run_compare_models(self))
     self.compareCopyBtn.clicked.connect(lambda: _kuquickml_copy_compare_results(self))
@@ -4843,7 +4873,7 @@ def _kuquickml_setup_compare_tab(self):
     btn_layout.addWidget(self.compareSaveBtn)
     layout.addLayout(btn_layout)
 
-    layout.addWidget(QLabel('Selected Model Files'))
+    layout.addWidget(QLabel('Selected model files'))
     self.compareModelListWidget = QListWidget()
     self.compareModelListWidget.setSelectionMode(QListWidget.ExtendedSelection)
     layout.addWidget(self.compareModelListWidget)
@@ -4930,7 +4960,7 @@ def _kuquickml_load_compare_models(self):
 def _kuquickml_run_compare_models(self):
     paths = getattr(self, 'compare_model_paths', [])
     if not paths:
-        QMessageBox.warning(self, 'Compare Models', 'Please load at least one model file first.')
+        QMessageBox.warning(self, 'Compare Models', 'Please load one or more model files first.')
         return
 
     classification_rows = []
@@ -5172,7 +5202,7 @@ def _kuquickml_show_dual_importance_dialog(self, title, feature_names, perm_valu
         label.setWordWrap(True)
         layout.addWidget(label)
 
-    mi_note = QLabel('There is no fixed significance threshold for mutual information. Therefore, it is more appropriate to interpret it based on its relative size and rank compared with other features in the same dataset rather than its absolute value.')
+    mi_note = QLabel('There is no fixed significance threshold for mutual information. It is more appropriate to interpret it by the relative magnitude and ranking of features within the same dataset than by its absolute value.')
     mi_note.setWordWrap(True)
     layout.addWidget(mi_note)
 
@@ -5187,7 +5217,7 @@ def _kuquickml_show_dual_importance_dialog(self, title, feature_names, perm_valu
         alt_table = _kuquickml_build_importance_table(['Feature', 'Importance'], alt_rows, dialog)
         layout.addWidget(alt_table)
 
-    guide = QLabel('Drag to select cells, then use right-click Copy or Ctrl+C.')
+    guide = QLabel('Drag to select cells, then use right-click copy or Ctrl+C.')
     guide.setWordWrap(True)
     layout.addWidget(guide)
 
@@ -5203,7 +5233,7 @@ def _kuquickml_showMLPFeatureImportances_dual(self, feature_importances, alterna
     names = [f for f, _ in feature_importances]
     perm_vals = [v for _, v in feature_importances]
     alt_vals = None if alternative_importances is None else [v for _, v in alternative_importances]
-    intro = '<b>MLP</b><br>Displays permutation importance together with an alternative metric.'
+    intro = '<b>MLP</b><br>Shows permutation importance together with an alternative metric.'
     _kuquickml_show_dual_importance_dialog(self, 'Feature Importances', names, perm_vals, alt_vals, alternative_name, intro)
 
 
@@ -5321,7 +5351,7 @@ def _kuquickml_showKNNPermutationImportance_dual(self, reducer, X_eval, y_eval, 
         perm_vals = _kuquickml_permutation(_ReducerWrappedEstimator(reducer, model), X_use, y_use, task=task, n_repeats=10)
         alt_vals = _kuquickml_mutual_info(X_use, y_use, task=task)
         names = list(feature_names) if feature_names and len(feature_names) == len(perm_vals) else [f'X{i}' for i in range(len(perm_vals))]
-        intro = f'<b>{title_prefix}</b><br>Displays permutation importance together with an alternative metric.<br>The KNN alternative is mutual information.'
+        intro = f'<b>{title_prefix}</b><br>Shows permutation importance together with an alternative metric.<br>For KNN, the alternative metric is mutual information.'
         _kuquickml_show_dual_importance_dialog(self, 'Feature Importances', names, perm_vals, alt_vals, 'mutual information', intro)
     except Exception as e:
         QMessageBox.warning(self, 'Permutation Importance Error', f'Failed to compute importance:\n{e}')
@@ -5353,7 +5383,7 @@ def _kuquickml_showSVMImportanceUnavailable_dual(self, kernel, reducer, X_test, 
         perm_vals = _kuquickml_permutation(_ReducerWrappedEstimator(model, reducer), X_use, y_use, task=task, n_repeats=10)
         alt_vals = _kuquickml_mutual_info(X_use, y_use, task=task)
         names = list(feature_names) if feature_names and len(feature_names) == len(perm_vals) else [f'X{i}' for i in range(len(perm_vals))]
-        intro = f'<b>{title_prefix}</b><br>Displays permutation importance together with an alternative metric.<br>The SVM alternative is mutual information regardless of kernel.'
+        intro = f'<b>{title_prefix}</b><br>Shows permutation importance together with an alternative metric.<br>For SVM, the alternative metric is mutual information regardless of the kernel.'
         _kuquickml_show_dual_importance_dialog(self, 'Feature Importances', names, perm_vals, alt_vals, 'mutual information', intro)
     except Exception as e:
         QMessageBox.warning(self, 'Permutation Importance Error', f'Failed to compute importance:\n{e}')
@@ -5400,7 +5430,7 @@ def _kuquickml_make_loading_wrapper(method_name, title, label_text):
 
 def _kuquickml_setup_compare_tab(self):
     layout = QVBoxLayout()
-    note1 = QLabel('Compare the Train / Test / CV performance of saved models. Load multiple model files and click the compare button.')
+    note1 = QLabel('Compare the Train / Test / CV performance of saved models. Load multiple model files, then click the compare button.')
     note2 = QLabel('Classification models are compared with classification models, and regression models with regression models.')
     note3 = QLabel('Multiclass ROC-AUC is calculated using the One-vs-Rest (OVR) strategy with macro averaging.')
     note1.setWordWrap(True)
@@ -5411,15 +5441,15 @@ def _kuquickml_setup_compare_tab(self):
     layout.addWidget(note3)
 
     btn_layout = QHBoxLayout()
-    self.compareLoadModelsBtn = QPushButton('Load Model Files')
-    self.compareRunBtn = QPushButton('Run Comparison')
+    self.compareLoadModelsBtn = QPushButton('Load model files')
+    self.compareRunBtn = QPushButton('Run comparison')
     self.compareLoadModelsBtn.clicked.connect(lambda: _kuquickml_load_compare_models(self))
     self.compareRunBtn.clicked.connect(lambda: _kuquickml_run_compare_models(self))
     btn_layout.addWidget(self.compareLoadModelsBtn)
     btn_layout.addWidget(self.compareRunBtn)
     layout.addLayout(btn_layout)
 
-    layout.addWidget(QLabel('Selected Model Files'))
+    layout.addWidget(QLabel('Selected model files'))
     self.compareModelListWidget = QListWidget()
     self.compareModelListWidget.setSelectionMode(QListWidget.ExtendedSelection)
     layout.addWidget(self.compareModelListWidget)
@@ -5438,13 +5468,13 @@ def _kuquickml_setup_compare_tab(self):
 
 
 # Wrap model creation methods with loading indicator
-_kuquickml_make_loading_wrapper('createClassificationModel', 'Loading', 'Creating KNN classification model...')
-_kuquickml_make_loading_wrapper('createRegressionModel', 'Loading', 'Creating KNN regression model...')
-_kuquickml_make_loading_wrapper('createMLPClassificationModel', 'Loading', 'Creating MLP classification model...')
-_kuquickml_make_loading_wrapper('createMLPRegressionModel', 'Loading', 'Creating MLP regression model...')
-_kuquickml_make_loading_wrapper('createRFClassificationModel', 'Loading', 'Creating RF classification model...')
-_kuquickml_make_loading_wrapper('createRFRegressionModel', 'Loading', 'Creating RF regression model...')
-_kuquickml_make_loading_wrapper('createSVMRegressionModel', 'Loading', 'Creating SVM regression model...')
+_kuquickml_make_loading_wrapper('createClassificationModel', 'Loading', 'Creating a KNN classification model...')
+_kuquickml_make_loading_wrapper('createRegressionModel', 'Loading', 'Creating a KNN regression model...')
+_kuquickml_make_loading_wrapper('createMLPClassificationModel', 'Loading', 'Creating an MLP classification model...')
+_kuquickml_make_loading_wrapper('createMLPRegressionModel', 'Loading', 'Creating an MLP regression model...')
+_kuquickml_make_loading_wrapper('createRFClassificationModel', 'Loading', 'Creating an RF classification model...')
+_kuquickml_make_loading_wrapper('createRFRegressionModel', 'Loading', 'Creating an RF regression model...')
+_kuquickml_make_loading_wrapper('createSVMRegressionModel', 'Loading', 'Creating an SVM regression model...')
 # createSVMModel already has its own progress dialog in this file, so we leave it as-is.
 
 # ===== end loading UI patch =====
@@ -5642,7 +5672,7 @@ def _kuquickml_showKNNPermutationImportance_dual_debug(self, reducer, X_eval, y_
         print("[DEBUG] ===== end KNN importance dialog input =====\n")
         perm_vals = _kuquickml_permutation(model, X_model, y_eval, task=task, n_repeats=10)
         alt_vals = _kuquickml_mutual_info_debug(X_use, y_eval, task=task)
-        intro = f'<b>{title_prefix}</b><br>Displays permutation importance together with an alternative metric.<br>The KNN alternative is mutual information.'
+        intro = f'<b>{title_prefix}</b><br>Shows permutation importance together with an alternative metric.<br>For KNN, the alternative metric is mutual information.'
         _kuquickml_show_dual_importance_dialog(self, 'Feature Importances', feature_names, perm_vals, alt_vals, 'mutual information', intro)
     except Exception as e:
         QMessageBox.warning(self, 'Feature Importance', f'Failed to compute feature importance:\n{e}')
@@ -5730,7 +5760,7 @@ MyApp.showKNNPermutationImportance = _kuquickml_showKNNPermutationImportance_dua
 MyApp.showSVMImportanceUnavailable = _kuquickml_showSVMImportanceUnavailable_dual
 
 # Ensure model creation keeps loading dialog
-_kuquickml_make_loading_wrapper('createClassificationModel', 'Loading', 'Creating KNN classification model...')
+_kuquickml_make_loading_wrapper('createClassificationModel', 'Loading', 'Creating a KNN classification model...')
 # ===== end final stability patch =====
 
 
@@ -5752,7 +5782,7 @@ def _kuquickml_safe_numeric_series(s):
     return pd.to_numeric(s, errors="coerce")
 
 def _kuquickml_label_numeric_series(s):
-    # allow Label to be read as numeric if it is a numeric string (e.g. "0", "1", "1,000")
+    # Allow Label values to be read as numeric when they are numeric strings (e.g. "0", "1", "1,000")
     s = s.astype(str).str.strip()
     s = s.replace({"": np.nan, "nan": np.nan, "None": np.nan, "NULL": np.nan})
     s = s.str.replace(",", "", regex=False)
@@ -5788,8 +5818,8 @@ def _kuquickml_safe_load_csvviewer(self, filename):
         QMessageBox.warning(
             self,
             "Duplicate-like Columns Detected",
-            "Duplicate or duplicate-looking column names were detected.\n"
-            "These columns may represent different features, or they may be duplicated headers.\n\n"
+            "Duplicate or apparently duplicate column names were detected.\n"
+            "These columns may be different features or duplicated headers.\n\n"
             + "\n".join(msg_lines)
         )
 
@@ -5807,7 +5837,7 @@ def _kuquickml_safe_load_csvviewer(self, filename):
         data['Sample'] = range(1, len(data) + 1)
         sample_column_name = 'Sample'
 
-    # handle Label: use numeric values when safe conversion is possible; otherwise use the mapping dialog
+    # Handle Label: if it can be safely converted to numeric, use numeric values; otherwise use a mapping dialog
     label_numeric = _kuquickml_label_numeric_series(data[label_column_name])
     label_raw_nonempty = data[label_column_name].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan, "NULL": np.nan})
     if label_raw_nonempty.notna().sum() == label_numeric.notna().sum() and label_raw_nonempty.notna().sum() > 0:
@@ -5839,7 +5869,7 @@ def _kuquickml_safe_load_csvviewer(self, filename):
             if bad_mask.any():
                 failed_numeric_cols.append(col)
         else:
-            # attempt coercion even for columns that do not look numeric, but notify the user if the result is all NaN
+            # Try coercion even for columns that do not look numeric, but notify the user if they become all NaN
             converted = _kuquickml_safe_numeric_series(original)
             data[col] = converted
             before_nonempty = original.astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan, "NULL": np.nan})
@@ -5853,15 +5883,15 @@ def _kuquickml_safe_load_csvviewer(self, filename):
         QMessageBox.warning(
             self,
             "Numeric Conversion Warning",
-            "Some values could not be converted to numbers in certain columns.\n"
-            "Those values will be treated as NaN and should be handled in a later preprocessing step.\n\n"
+            "Some values could not be converted to numeric in certain columns.\n"
+            "Those values will be treated as NaN and should be handled later during preprocessing.\n\n"
             f"{preview}"
         )
 
     if data.shape[0] == 0:
-        QMessageBox.warning(self, "Empty Data", "The loaded data contains no rows.")
+        QMessageBox.warning(self, "Empty Data", "The loaded data has no rows.")
 
-    # normalize column names
+    # standardize column names
     data = data.rename(columns={sample_column_name: 'Sample', label_column_name: 'Label'})
 
     self.original_data = data[['Sample'] + feature_columns].copy()
@@ -5910,7 +5940,7 @@ def _kuquickml_prepare_unknown_prediction_frame(df, saved_feature_names):
     trimmed_map = {}
     for c in original_cols:
         trimmed = str(c).strip()
-        # if the same trimmed name appears multiple times, keep the first and leave the rest unchanged.
+        # If the same trimmed name appears multiple times, keep the first one and leave the rest unchanged.
         if trimmed not in trimmed_map:
             trimmed_map[trimmed] = c
     work = work.rename(columns={orig: trim for trim, orig in trimmed_map.items()})
@@ -6119,13 +6149,18 @@ def _v379_createClassificationModel(self):
         QMessageBox.warning(self, "Selection Error", "Please select a dimensionality reduction method.")
         return
     method_name, reducer = selected_method
-    reducer.fit(X_train_numeric.values, y_train)
-    X_train_embedded = reducer.transform(X_train_numeric.values)
-    X_test_embedded = reducer.transform(X_test_numeric.values)
+    if reducer is not None:
+        reducer.fit(X_train_numeric.values, y_train)
+        X_train_embedded = reducer.transform(X_train_numeric.values)
+        X_test_embedded = reducer.transform(X_test_numeric.values)
+    else:
+        X_train_embedded = X_train_numeric.values
+        X_test_embedded = X_test_numeric.values
     knn.fit(X_train_embedded, y_train)
     accuracy = knn.score(X_test_embedded, y_test)
-    self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors,
-                     score_value=accuracy, score_label="Test accuracy")
+    if hasattr(X_train_embedded, "shape") and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+        self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors,
+                         score_value=accuracy, score_label="Test accuracy")
     y_pred_train = knn.predict(X_train_embedded)
     y_pred_test = knn.predict(X_test_embedded)
     try:
@@ -6334,21 +6369,21 @@ _kuquickml_fill_compare_table = _v379_fill_compare_table
 
 def _v379_setup_compare_tab(self):
     layout = QVBoxLayout()
-    note1 = QLabel('Compare the Train / Test / CV performance of saved models. Load multiple model files and click the compare button.')
+    note1 = QLabel('Compare the Train / Test / CV performance of saved models. Load multiple model files, then click the compare button.')
     note2 = QLabel('Classification models are compared with classification models, and regression models with regression models.')
     note3 = QLabel('Multiclass ROC-AUC is calculated using the One-vs-Rest (OVR) strategy with macro averaging.')
     for n in (note1, note2, note3):
         n.setWordWrap(True)
         layout.addWidget(n)
     btn_layout = QHBoxLayout()
-    self.compareLoadModelsBtn = QPushButton('Load Model Files')
-    self.compareRunBtn = QPushButton('Run Comparison')
+    self.compareLoadModelsBtn = QPushButton('Load model files')
+    self.compareRunBtn = QPushButton('Run comparison')
     self.compareLoadModelsBtn.clicked.connect(lambda: _kuquickml_load_compare_models(self))
     self.compareRunBtn.clicked.connect(lambda: _kuquickml_run_compare_models(self))
     btn_layout.addWidget(self.compareLoadModelsBtn)
     btn_layout.addWidget(self.compareRunBtn)
     layout.addLayout(btn_layout)
-    layout.addWidget(QLabel('Selected Model Files'))
+    layout.addWidget(QLabel('Selected model files'))
     self.compareModelListWidget = QListWidget()
     self.compareModelListWidget.setSelectionMode(QListWidget.ExtendedSelection)
     layout.addWidget(self.compareModelListWidget)
@@ -6414,7 +6449,7 @@ def _v382b_show_single_importance_dialog(self, title, feature_names, values, met
     _kuquickml_enable_copyable_table(table)
     layout.addWidget(table)
 
-    note = QLabel("Drag to select cells, then use right-click Copy or Ctrl+C.")
+    note = QLabel("Drag to select cells, then use right-click copy or Ctrl+C.")
     note.setWordWrap(True)
     layout.addWidget(note)
 
@@ -6438,10 +6473,10 @@ def _v382b_showKNNImportance(self, reducer, X_eval, y_eval, model, feature_names
         vals = _kuquickml_mutual_info(X_eval, y_eval, task=task)
         intro = (
             f"<b>{title_prefix}</b><br>"
-            "Importance on this screen is computed using <b>mutual information</b>.<br>"
+            "Importance on this screen is calculated using <b>mutual information</b>.<br>"
             "It indicates how strongly each feature is related to the target.<br>"
-            "Larger values mean the feature contains more information for distinguishing the target.<br>"
-            "There is no fixed significance threshold, so it is best interpreted by comparing its relative size and rank with other features in the same dataset."
+            "Larger values indicate that the feature contains more information for distinguishing the target.<br>"
+            "There is no fixed significance threshold; it is best interpreted by relative magnitude and ranking among features in the same dataset."
         )
         _v382b_show_single_importance_dialog(self, 'Feature Importances', feature_names, vals, 'mutual information', intro)
     except Exception as e:
@@ -6452,10 +6487,10 @@ def _v382b_showSVMImportance(self, kernel, reducer, X_test, y_test, model, featu
         vals = _kuquickml_mutual_info(X_test, y_test, task=task)
         intro = (
             f"<b>{title_prefix}</b><br>"
-            "Importance on this screen is computed using <b>mutual information</b>.<br>"
+            "Importance on this screen is calculated using <b>mutual information</b>.<br>"
             "It indicates how strongly each feature is related to the target.<br>"
-            "Larger values mean the feature contains more information for distinguishing the target.<br>"
-            "There is no fixed significance threshold, so it is best interpreted by comparing its relative size and rank with other features in the same dataset."
+            "Larger values indicate that the feature contains more information for distinguishing the target.<br>"
+            "There is no fixed significance threshold; it is best interpreted by relative magnitude and ranking among features in the same dataset."
         )
         _v382b_show_single_importance_dialog(self, 'Feature Importances', feature_names, vals, 'mutual information', intro)
     except Exception as e:
@@ -6471,11 +6506,11 @@ def _v382b_showMLPFeatureImportances(self, feature_importances, alternative_impo
             vals = [v for _, v in feature_importances]
         intro = (
             "<b>MLP</b><br>"
-            "Importance on this screen is computed using the <b>input-layer mean absolute weight</b>.<br>"
-            "It uses the average absolute value of the weights connecting each input feature to the first hidden layer.<br>"
-            "Larger values suggest the model may have relied more heavily on that feature.<br>"
+            "Importance on this screen is calculated using the <b>input-layer mean absolute weight</b>.<br>"
+            "It uses the mean absolute value of the weights connecting each input feature to the first hidden layer.<br>"
+            "Larger values suggest that the model may have relied more heavily on that feature.<br>"
             "This is a heuristic interpretation metric, and rather than direct statistical relevance between the feature and target, "
-            "it should be interpreted based on the magnitude of the model's internal weights."
+            "it should be interpreted based on the magnitude of the internal model weights."
         )
         _v382b_show_single_importance_dialog(self, 'Feature Importances', names, vals, 'input-layer mean abs weight', intro)
     except Exception as e:
@@ -7531,10 +7566,10 @@ def _final_show_mlp_importance(self, feature_importances, alternative_importance
 
     info = QLabel(
         'MLP\n'
-        "Importance on this screen is computed using the input-layer mean absolute weight.\n"
-        "It uses the average absolute value of the weights connecting each input feature to the first hidden layer.\n"
-        "Larger values suggest the model may have relied more heavily on that feature.\n"
-        "This is a heuristic interpretation metric and should be interpreted based on the magnitude of the model's internal weights rather than direct statistical relevance between the feature and target."
+        'Importance on this screen is calculated using the input-layer mean absolute weight.\n'
+        'It uses the mean absolute value of the weights connecting each input feature to the first hidden layer.\n'
+        'Larger values suggest that the model may have relied more heavily on that feature.\n'
+        'This is a heuristic interpretation metric, and rather than direct statistical relevance between the feature and target, it should be interpreted based on the magnitude of the internal model weights.'
     )
     info.setWordWrap(True)
     layout.addWidget(info)
@@ -7558,7 +7593,7 @@ def _final_show_mlp_importance(self, feature_importances, alternative_importance
     _kuquickml_enable_copyable_table(table)
     layout.addWidget(table)
 
-    footer = QLabel('Drag to select cells, then use right-click Copy or Ctrl+C.')
+    footer = QLabel('Drag to select cells, then use right-click copy or Ctrl+C.')
     layout.addWidget(footer)
     btn = QPushButton('Close')
     btn.clicked.connect(dialog.close)
@@ -7993,3 +8028,257 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     ex = MyApp()
     sys.exit(app.exec_())
+
+
+# ===== v5 base cleanup patch: preserve v5 loader, allow None for KNN/SVM, remove permutation-based active handlers =====
+from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
+
+def _v5clean_to_numeric_df(X):
+    if isinstance(X, pd.DataFrame):
+        X_df = X.copy()
+    else:
+        X_df = pd.DataFrame(X)
+    for col in X_df.columns:
+        if X_df[col].dtype == object:
+            X_df[col] = pd.to_numeric(X_df[col].astype(str).str.replace(',', '', regex=False), errors='coerce')
+    return X_df.fillna(0)
+
+
+def _v5clean_mutual_info(X, y, task='classification'):
+    X_df = _v5clean_to_numeric_df(X)
+    y_arr = np.asarray(y)
+    if task == 'classification':
+        vals = mutual_info_classif(X_df, y_arr, random_state=42)
+    else:
+        vals = mutual_info_regression(X_df, y_arr, random_state=42)
+    return np.asarray(vals, dtype=float)
+
+
+def _v5clean_show_importance_dialog(self, title, feature_names, values, metric_name, intro_html):
+    vals = np.asarray(values, dtype=float)
+    names = list(feature_names) if feature_names else [f'Feature {i+1}' for i in range(len(vals))]
+    n = min(len(vals), len(names))
+    order = np.argsort(np.nan_to_num(vals[:n], nan=-np.inf))[::-1]
+
+    dialog = QDialog(self)
+    dialog.setWindowTitle(title)
+    dialog.resize(800, 600)
+    layout = QVBoxLayout(dialog)
+
+    info = QLabel(intro_html)
+    info.setWordWrap(True)
+    layout.addWidget(info)
+
+    table = QTableWidget(dialog)
+    table.setColumnCount(2)
+    table.setHorizontalHeaderLabels(['Feature', metric_name])
+    table.setRowCount(n)
+    for row, idx in enumerate(order):
+        table.setItem(row, 0, QTableWidgetItem(str(names[idx])))
+        table.setItem(row, 1, QTableWidgetItem(f'{float(vals[idx]):.6f}'))
+    table.resizeColumnsToContents()
+    try:
+        _kuquickml_enable_copyable_table(table)
+    except Exception:
+        pass
+    layout.addWidget(table)
+
+    dialog.setLayout(layout)
+    dialog.setWindowModality(Qt.NonModal)
+    dialog.show()
+
+
+def _v5clean_show_knn_importance(self, reducer, X_eval, y_eval, model, feature_names, title_prefix='KNN', task='classification'):
+    try:
+        vals = _v5clean_mutual_info(X_eval, y_eval, task=task)
+        intro = (
+            f'<b>{title_prefix}</b><br>'
+            'Importance on this screen is calculated using <b>mutual information</b>.<br>'
+            'It indicates how strongly each feature is related to the target.<br>'
+            'Larger values can be interpreted as the feature containing more information.<br>'
+            'Rather than using a fixed absolute threshold, it is best interpreted by relative magnitude and ranking among features in the same dataset.'
+        )
+        _v5clean_show_importance_dialog(self, 'Feature Importances', feature_names, vals, 'mutual information', intro)
+    except Exception as e:
+        QMessageBox.warning(self, 'Feature Importance Error', f'Failed to compute feature importance:\n{e}')
+
+
+def _v5clean_show_svm_importance(self, kernel, reducer, X_test, y_test, model, feature_names, title_prefix='SVM', task='classification'):
+    try:
+        vals = _v5clean_mutual_info(X_test, y_test, task=task)
+        intro = (
+            f'<b>{title_prefix}</b><br>'
+            'Importance on this screen is calculated using <b>mutual information</b>.<br>'
+            'It indicates how strongly each feature is related to the target.<br>'
+            'Larger values can be interpreted as the feature containing more information.<br>'
+            'Rather than using a fixed absolute threshold, it is best interpreted by relative magnitude and ranking among features in the same dataset.'
+        )
+        _v5clean_show_importance_dialog(self, 'Feature Importances', feature_names, vals, 'mutual information', intro)
+    except Exception as e:
+        QMessageBox.warning(self, 'Feature Importance Error', f'Failed to compute feature importance:\n{e}')
+
+
+def _v5clean_apply_current_reducer(self):
+    try:
+        if not hasattr(self, 'scaled_unknown_data'):
+            QMessageBox.warning(self, 'Data Error', 'Please scale the unknown data first.')
+            return
+        selected_models = [name for name, checkbox in self.modelCheckBoxes.items() if checkbox.isChecked()]
+        if not selected_models:
+            QMessageBox.warning(self, 'Model Selection Error', 'Please select at least one model.')
+            return
+        model_name = selected_models[0]
+        reducer = self.model_reducers.get(model_name, None)
+        unknown_df = pd.DataFrame(self.scaled_unknown_data, columns=self.unknown_data.columns)
+        if hasattr(self, 'feature_names'):
+            compare_expected = _kuquickml_strip_non_feature_columns(list(self.feature_names))
+            compare_loaded = _kuquickml_strip_non_feature_columns(list(unknown_df.columns))
+            missing = set(compare_expected) - set(compare_loaded)
+            if missing:
+                QMessageBox.warning(self, 'Feature Mismatch', f"The following features are missing in unknown data:\n{', '.join(missing)}")
+                return
+            unknown_df = unknown_df.loc[:, compare_expected]
+        if reducer is None:
+            reduced = unknown_df.values
+            print(f'[Reducer Applied] No dimensionality reduction for {model_name}')
+        else:
+            reduced = reducer.transform(unknown_df)
+            print(f'[Reducer Applied] Using reducer from {model_name}')
+        self.reduced_unknown_data = reduced
+        self.showUnknownData(pd.DataFrame(reduced))
+    except Exception as e:
+        QMessageBox.warning(self, 'Reducer Error', f'Failed to apply reducer:\n{e}')
+
+
+def _v5clean_createClassificationModel(self):
+    if not self.checkDataSplit():
+        return
+    X_train = pd.read_csv(resource_path('Temp/X_train.csv'))
+    X_test = pd.read_csv(resource_path('Temp/X_test.csv'))
+    y_train = pd.read_csv(resource_path('Temp/y_train.csv')).values.ravel()
+    y_test = pd.read_csv(resource_path('Temp/y_test.csv')).values.ravel()
+
+    X_train_numeric = self._drop_sample_and_numeric(X_train).fillna(0)
+    X_test_numeric = self._drop_sample_and_numeric(X_test).fillna(0)
+    feature_names = list(X_train_numeric.columns)
+    n_neighbors = self.n_neighbors_input.value()
+
+    knn = KNeighborsClassifier(n_neighbors=n_neighbors)
+    selected_method = self.getSelectedDimReductionMethod()
+    if not selected_method:
+        QMessageBox.warning(self, 'Selection Error', 'Please select a dimensionality reduction method.')
+        return
+
+    method_name, reducer = selected_method
+    if reducer is not None:
+        reducer.fit(X_train_numeric.values, y_train)
+        X_train_embedded = reducer.transform(X_train_numeric.values)
+        X_test_embedded = reducer.transform(X_test_numeric.values)
+    else:
+        X_train_embedded = X_train_numeric.values
+        X_test_embedded = X_test_numeric.values
+
+    knn.fit(X_train_embedded, y_train)
+    accuracy = knn.score(X_test_embedded, y_test)
+    if hasattr(X_train_embedded, 'shape') and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+        self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, score_value=accuracy, score_label='Test accuracy')
+
+    y_pred_test = knn.predict(X_test_embedded)
+    cm = confusion_matrix(y_test, y_pred_test)
+    unique_labels = np.unique(np.concatenate((y_test, y_pred_test)))
+    true = [f'true_{label}' for label in unique_labels]
+    pred = [f'pred_{label}' for label in unique_labels]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        precision = np.round(np.diag(cm) / np.sum(cm, axis=0) * 100, 3)
+        precision = np.nan_to_num(precision)
+    cm_df = pd.DataFrame(cm, index=true, columns=pred)
+    cm_df['Prediction Accuracy (%)'] = precision
+    self.showConfusionMatrix(cm_df)
+
+    train_accuracy = knn.score(X_train_embedded, y_train)
+    result_text = (
+        f'Train accuracy: {train_accuracy:.4f}\n'
+        f'Test accuracy: {accuracy:.4f}\n'
+        f'Neighbors: {n_neighbors}\n'
+        f'Dimensionality reduction: {method_name}'
+    )
+    self.resultsLabel.setText(result_text)
+    self.saveModelButton.setVisible(True)
+    self.useCurrentModelButton.setVisible(True)
+    self.current_model = knn
+    self.current_model_type = 'KNN Classification'
+    self.showKNNFeatureImportance(reducer, X_test_numeric, y_test, knn, feature_names, title_prefix='KNN (Classification)', task='classification')
+    self.plotObservedVsPredicted(y_train, knn.predict(X_train_embedded), y_test, y_pred_test, 'KNN Observed vs Predicted')
+    self.models['KNN Classification'] = {'model': knn, 'scaler': self._get_bundle_scaler(), 'reducer': reducer, 'feature_names': feature_names, 'label_mapping': self._get_label_mapping()}
+    if reducer is not None:
+        self.model_reducers['KNN Classification'] = reducer
+    elif 'KNN Classification' in self.model_reducers:
+        del self.model_reducers['KNN Classification']
+
+
+def _v5clean_createRegressionModel(self):
+    if not self.checkDataSplit():
+        return
+    X_train = pd.read_csv(resource_path('Temp/X_train.csv'))
+    X_test = pd.read_csv(resource_path('Temp/X_test.csv'))
+    y_train = pd.read_csv(resource_path('Temp/y_train.csv')).values.ravel()
+    y_test = pd.read_csv(resource_path('Temp/y_test.csv')).values.ravel()
+
+    X_train_numeric = self._drop_sample_and_numeric(X_train).fillna(0)
+    X_test_numeric = self._drop_sample_and_numeric(X_test).fillna(0)
+    feature_names = list(X_train_numeric.columns)
+    n_neighbors = self.n_neighbors_input.value()
+
+    knn = KNeighborsRegressor(n_neighbors=n_neighbors)
+    selected_method = self.getSelectedDimReductionMethod()
+    if not selected_method:
+        QMessageBox.warning(self, 'Selection Error', 'Please select a dimensionality reduction method.')
+        return
+
+    method_name, reducer = selected_method
+    if reducer is not None:
+        reducer.fit(X_train_numeric.values, y_train)
+        X_train_embedded = reducer.transform(X_train_numeric.values)
+        X_test_embedded = reducer.transform(X_test_numeric.values)
+    else:
+        X_train_embedded = X_train_numeric.values
+        X_test_embedded = X_test_numeric.values
+
+    knn.fit(X_train_embedded, y_train)
+    y_pred_train = knn.predict(X_train_embedded)
+    y_pred_test = knn.predict(X_test_embedded)
+    mse = mean_squared_error(y_test, y_pred_test)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test, y_pred_test)
+    mae = mean_absolute_error(y_test, y_pred_test)
+    if hasattr(X_train_embedded, 'shape') and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+        self.plotRegressionResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, score_value=r2, score_label='Test R²')
+    result_text = (
+        f'Test MSE: {mse:.4f}\nTest RMSE: {rmse:.4f}\nTest MAE: {mae:.4f}\nTest R²: {r2:.4f}\nNeighbors: {n_neighbors}\nDimensionality reduction: {method_name}'
+    )
+    self.resultsLabel.setText(result_text)
+    self.saveModelButton.setVisible(True)
+    self.useCurrentModelButton.setVisible(True)
+    self.current_model = knn
+    self.current_model_type = 'KNN Regression'
+    self.showKNNFeatureImportance(reducer, X_test_numeric, y_test, knn, feature_names, title_prefix='KNN (Regression)', task='regression')
+    self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test, 'KNN Regression Observed vs Predicted')
+    self.models['KNN Regression'] = {'model': knn, 'scaler': self._get_bundle_scaler(), 'reducer': reducer, 'feature_names': feature_names, 'label_mapping': None}
+    if reducer is not None:
+        self.model_reducers['KNN Regression'] = reducer
+    elif 'KNN Regression' in self.model_reducers:
+        del self.model_reducers['KNN Regression']
+
+
+MyApp.showKNNFeatureImportance = _v5clean_show_knn_importance
+MyApp.showKNNPermutationImportance = _v5clean_show_knn_importance
+MyApp.showSVMImportanceUnavailable = _v5clean_show_svm_importance
+MyApp.applyCurrentReducer = _v5clean_apply_current_reducer
+MyApp.createClassificationModel = _v5clean_createClassificationModel
+MyApp.createRegressionModel = _v5clean_createRegressionModel
+
+def _v5clean_no_permutation(*args, **kwargs):
+    raise RuntimeError('Permutation importance is disabled in this version.')
+
+_kuquickml_permutation = _v5clean_no_permutation
+# ===== end v5 base cleanup patch =====
