@@ -856,6 +856,10 @@ class MyApp(QMainWindow):
                 for j in range(df_show.shape[1]):
                     table.setItem(i, j, QTableWidgetItem(_fmt_optuna_value(df_show.iloc[i, j])))
             table.resizeColumnsToContents()
+        try:
+            table.horizontalHeader().setStretchLastSection(True)
+        except Exception:
+            pass
         layout.addWidget(table)
 
         dialog.setLayout(layout)
@@ -3892,7 +3896,7 @@ class MyApp(QMainWindow):
         if splitter is None:
             return
 
-        fold_scores = {"accuracy": [], "f1": [], "roc_auc": [], "r2": [], "rmse": []}
+        fold_scores = {"accuracy": [], "precision": [], "recall": [], "specificity": [], "f1": [], "roc_auc": [], "r2": [], "rmse": []}
 
         # Determine multi-class
         unique_y = np.unique(y)
@@ -3926,10 +3930,24 @@ class MyApp(QMainWindow):
             y_pred = model.predict(X_test_used)
             fold_scores["accuracy"].append(accuracy_score(y_test, y_pred))
 
-            # F1
             avg = "macro" if is_multiclass else "binary"
             try:
-                fold_scores["f1"].append(f1_score(y_test, y_pred, average=avg))
+                fold_scores["precision"].append(_kuquickml_precision_score(y_test, y_pred, average=avg, zero_division=0))
+            except Exception:
+                fold_scores["precision"].append(np.nan)
+            try:
+                fold_scores["recall"].append(_kuquickml_recall_score(y_test, y_pred, average=avg, zero_division=0))
+            except Exception:
+                fold_scores["recall"].append(np.nan)
+            try:
+                specificity = _kuquickml_specificity_score(y_test, y_pred)
+                fold_scores["specificity"].append(np.nan if specificity is None else float(specificity))
+            except Exception:
+                fold_scores["specificity"].append(np.nan)
+
+            # F1
+            try:
+                fold_scores["f1"].append(f1_score(y_test, y_pred, average=avg, zero_division=0))
             except Exception:
                 fold_scores["f1"].append(np.nan)            # ROC-AUC (optional)
             auc_val = np.nan
@@ -3993,8 +4011,8 @@ class MyApp(QMainWindow):
 
     def _show_cv_results_dialog(self, fold_scores: dict, task="classification"):
         dialog = QDialog(self)
-        dialog.setWindowTitle("5-Fold Cross-Validation Results")
-        dialog.setGeometry(120, 120, 560, 320)
+        dialog.setWindowTitle("5-Fold Cross-Validation Results (Accuracy / Precision / Recall / Specificity / F1 / ROC-AUC)")
+        dialog.setGeometry(120, 120, 900, 360)
         layout = QVBoxLayout(dialog)
 
         strategy = self.cvSplitStrategyCombo.currentText() if hasattr(self, "cvSplitStrategyCombo") else "(unknown)"
@@ -4012,6 +4030,9 @@ class MyApp(QMainWindow):
         else:
             metrics = [
                 ("Accuracy (CV)", fold_scores["accuracy"]),
+                ("Precision (CV)", fold_scores["precision"]),
+                ("Recall (CV)", fold_scores["recall"]),
+                ("Specificity (CV)", fold_scores["specificity"]),
                 ("F1-score (CV)", fold_scores["f1"]),
                 ("ROC-AUC (CV)", fold_scores["roc_auc"]),
             ]
@@ -4031,6 +4052,10 @@ class MyApp(QMainWindow):
             table.setItem(i, 2, QTableWidgetItem(fold_txt))
 
         table.resizeColumnsToContents()
+        try:
+            table.horizontalHeader().setStretchLastSection(True)
+        except Exception:
+            pass
         layout.addWidget(table)
 
         dialog.setLayout(layout)
@@ -4524,6 +4549,7 @@ try:
     import sklearn as _sklearn_pkg
     from sklearn.base import clone as _kuquickml_clone, is_classifier as _kuquickml_is_classifier, is_regressor as _kuquickml_is_regressor
     from sklearn.metrics import precision_score as _kuquickml_precision_score, recall_score as _kuquickml_recall_score, mean_absolute_error as _kuquickml_mae
+    from sklearn.metrics import confusion_matrix as _kuquickml_confusion_matrix
 except Exception:
     platform = None
     copy = None
@@ -4558,6 +4584,31 @@ def _kuquickml_safe_auc(y_true, estimator, X_used, task="classification"):
         return None
 
 
+def _kuquickml_specificity_score(y_true, y_pred):
+    try:
+        labels = np.unique(np.concatenate((np.asarray(y_true).ravel(), np.asarray(y_pred).ravel())))
+        if labels.size == 0:
+            return None
+        cm = _kuquickml_confusion_matrix(y_true, y_pred, labels=labels)
+        if cm.size == 0:
+            return None
+        total = float(np.sum(cm))
+        specificities = []
+        for i in range(cm.shape[0]):
+            tp = float(cm[i, i])
+            fn = float(np.sum(cm[i, :]) - tp)
+            fp = float(np.sum(cm[:, i]) - tp)
+            tn = total - tp - fn - fp
+            denom = tn + fp
+            if denom > 0:
+                specificities.append(tn / denom)
+        if not specificities:
+            return None
+        return float(np.mean(specificities))
+    except Exception:
+        return None
+
+
 def _kuquickml_training_metrics(task, estimator, X_used, y_true):
     y_pred = estimator.predict(X_used)
     if task == "regression":
@@ -4576,6 +4627,9 @@ def _kuquickml_training_metrics(task, estimator, X_used, y_true):
         "recall": float(_kuquickml_recall_score(y_true, y_pred, average=avg, zero_division=0)),
         "f1": float(f1_score(y_true, y_pred, average=avg, zero_division=0)),
     }
+    specificity = _kuquickml_specificity_score(y_true, y_pred)
+    if specificity is not None:
+        metrics["specificity"] = specificity
     auc = _kuquickml_safe_auc(y_true, estimator, X_used, task="classification")
     if auc is not None:
         metrics["roc_auc"] = auc
@@ -4600,7 +4654,7 @@ def _kuquickml_cv_metrics(self, estimator, reducer, task="classification"):
     splitter, groups = self._get_cv_splitter(y, n_splits=5)
 
     if task == "classification":
-        fold_scores = {"accuracy": [], "precision": [], "recall": [], "f1": [], "roc_auc": []}
+        fold_scores = {"accuracy": [], "precision": [], "recall": [], "specificity": [], "f1": [], "roc_auc": []}
     else:
         fold_scores = {"r2": [], "mse": [], "rmse": [], "mae": []}
 
@@ -4647,6 +4701,8 @@ def _kuquickml_cv_metrics(self, estimator, reducer, task="classification"):
             fold_scores["accuracy"].append(float(accuracy_score(y_test, y_pred)))
             fold_scores["precision"].append(float(_kuquickml_precision_score(y_test, y_pred, average=avg, zero_division=0)))
             fold_scores["recall"].append(float(_kuquickml_recall_score(y_test, y_pred, average=avg, zero_division=0)))
+            specificity = _kuquickml_specificity_score(y_test, y_pred)
+            fold_scores["specificity"].append(np.nan if specificity is None else float(specificity))
             fold_scores["f1"].append(float(f1_score(y_test, y_pred, average=avg, zero_division=0)))
             auc = _kuquickml_safe_auc(y_test, model, X_test_used, task="classification")
             fold_scores["roc_auc"].append(auc)
@@ -4803,12 +4859,21 @@ def _kuquickml_compare_columns_for_task(task):
         ('File', 'file_name'),
         ('Algorithm', 'algorithm_name'),
         ('Train Accuracy', ('training_metrics', 'accuracy')),
+        ('Train Precision', ('training_metrics', 'precision')),
+        ('Train Recall', ('training_metrics', 'recall')),
+        ('Train Specificity', ('training_metrics', 'specificity')),
         ('Train F1', ('training_metrics', 'f1')),
         ('Train ROC-AUC', ('training_metrics', 'roc_auc')),
         ('Test Accuracy', ('test_metrics', 'accuracy')),
+        ('Test Precision', ('test_metrics', 'precision')),
+        ('Test Recall', ('test_metrics', 'recall')),
+        ('Test Specificity', ('test_metrics', 'specificity')),
         ('Test F1', ('test_metrics', 'f1')),
         ('Test ROC-AUC', ('test_metrics', 'roc_auc')),
         ('CV Accuracy', ('cv_metrics', 'accuracy')),
+        ('CV Precision', ('cv_metrics', 'precision')),
+        ('CV Recall', ('cv_metrics', 'recall')),
+        ('CV Specificity', ('cv_metrics', 'specificity')),
         ('CV F1', ('cv_metrics', 'f1')),
         ('CV ROC-AUC', ('cv_metrics', 'roc_auc')),
     ]
@@ -6333,7 +6398,14 @@ def _v379_fill_compare_table(table, rows, task):
     if task == 'regression':
         metric_keys = [('R2','r2'), ('RMSE','rmse'), ('MSE','mse')]
     else:
-        metric_keys = [('Accuracy','accuracy'), ('F1','f1'), ('ROC-AUC','roc_auc')]
+        metric_keys = [
+            ('Accuracy','accuracy'),
+            ('Precision','precision'),
+            ('Recall','recall'),
+            ('Specificity','specificity'),
+            ('F1','f1'),
+            ('ROC-AUC','roc_auc')
+        ]
     cols = ['Model', 'Algorithm', 'Split'] + [m[0] for m in metric_keys]
     table.clear()
     table.setColumnCount(len(cols))
