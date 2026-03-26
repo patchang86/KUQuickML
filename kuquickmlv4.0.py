@@ -757,6 +757,7 @@ class MyApp(QMainWindow):
         def objective(trial):
             params = suggest_params(trial)
             scores = []
+            failed_folds = 0
             split_iter = splitter.split(X_train_numeric, y_train) if str(task).lower() == 'classification' else splitter.split(X_train_numeric)
             for train_idx, valid_idx in split_iter:
                 X_tr = X_train_numeric.iloc[train_idx]
@@ -764,17 +765,27 @@ class MyApp(QMainWindow):
                 y_tr = y_train[train_idx]
                 y_va = y_train[valid_idx]
                 reducer_name = params.get('reducer', 'None')
-                X_tr_used, X_va_used, _ = self._fit_transform_with_reducer_name(reducer_name, X_tr, X_va, y_tr, task)
-                model = build_estimator(params)
-                with warnings.catch_warnings():
-                    warnings.filterwarnings('ignore', category=ConvergenceWarning, module='sklearn')
-                    model.fit(X_tr_used, y_tr)
-                preds = model.predict(X_va_used)
-                score = accuracy_score(y_va, preds) if metric == 'accuracy' else r2_score(y_va, preds)
-                if np.isnan(score):
-                    raise ValueError('NaN score encountered during tuning.')
-                scores.append(float(score))
-            return float(np.mean(scores))
+                try:
+                    X_tr_used, X_va_used, _ = self._fit_transform_with_reducer_name(reducer_name, X_tr, X_va, y_tr, task)
+                    model = build_estimator(params)
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings('ignore', category=ConvergenceWarning, module='sklearn')
+                        model.fit(X_tr_used, y_tr)
+                    preds = model.predict(X_va_used)
+                    score = accuracy_score(y_va, preds) if metric == 'accuracy' else r2_score(y_va, preds)
+                    if np.isnan(score) or np.isinf(score):
+                        failed_folds += 1
+                        continue
+                    scores.append(float(score))
+                except Exception:
+                    failed_folds += 1
+                    continue
+            if not scores:
+                return -1e9
+            mean_score = float(np.mean(scores))
+            if failed_folds:
+                mean_score -= failed_folds * 1e3
+            return mean_score
 
         progress = QProgressDialog(f"Automatic tuning in progress...\nModel: {model_name_u}\nMetric: {metric}", None, 0, 30, self)
         progress.setWindowTitle('Optuna Tuning')
@@ -823,10 +834,13 @@ class MyApp(QMainWindow):
         best_score = tuning_result.get('best_score')
         metric = tuning_result.get('metric')
         best_params = tuning_result.get('best_params', {})
-        summary = QLabel(
-            f"Best CV {metric}: {best_score:.4f}\n\nBest parameters:\n"
-            + "\n".join(f"- {k}: {_fmt_optuna_value(v)}" for k, v in best_params.items())
+        summary_html = (
+            f"<b>Best CV {metric}: {best_score:.4f}</b><br><br><b>Best parameters:</b><br>"
+            + "<br>".join(f"- {k}: {_fmt_optuna_value(v)}" for k, v in best_params.items())
         )
+        summary = QLabel()
+        summary.setTextFormat(Qt.RichText)
+        summary.setText(summary_html)
         summary.setWordWrap(True)
         layout.addWidget(summary)
 
@@ -1043,7 +1057,7 @@ class MyApp(QMainWindow):
         frame_c_layout = QVBoxLayout(frame_c)
         label = QLabel("C Value:")
         self.c_value = QDoubleSpinBox()
-        self.c_value.setRange(0.01, 100.0)
+        self.c_value.setRange(0.01, 2000.0)
         self.c_value.setValue(1.0)
         self.c_value.setSingleStep(0.01)
         desc = QLabel("C 값은 오류 허용 정도를 조절하는 규제(regularization) 강도입니다.<br>"
@@ -1216,8 +1230,10 @@ class MyApp(QMainWindow):
             # reducer (split 단계에서 이미 scaled/raw가 결정되므로 여기서 추가 스케일링 금지)
             selected = self.getSelectedDimReductionMethod()
             reducer = None
+            method_name = "None"
             if selected:
-                _, reducer = selected
+                method_name, reducer = selected
+            if reducer is not None:
                 reducer.fit(X_train_numeric.values, y_train)
                 X_train_used = reducer.transform(X_train_numeric.values)
                 X_test_used = reducer.transform(X_test_numeric.values)
@@ -1252,10 +1268,11 @@ class MyApp(QMainWindow):
             self.showConfusionMatrix(cm_df)
 
             overall_accuracy = np.sum(np.diag(cm)) / np.sum(cm)
-            self.plotScatterWithDecisionBoundary(
-                X_train_used, y_train, X_test_used, y_pred_test, svc_model,
-                f"SVM Scatter Plot with Decision Boundary (kernel={kernel})\nTest accuracy = {overall_accuracy:.3f}"
-            )
+            if hasattr(X_train_used, "shape") and len(X_train_used.shape) == 2 and X_train_used.shape[1] == 2:
+                self.plotScatterWithDecisionBoundary(
+                    X_train_used, y_train, X_test_used, y_pred_test, svc_model,
+                    f"SVM Scatter Plot with Decision Boundary (kernel={kernel})\nTest accuracy = {overall_accuracy:.3f}"
+                )
 
             # 중요계수: linear + reducer 없음일 때만 (coef_ 기반)
             if kernel == "linear" and reducer is None and hasattr(svc_model, "coef_"):
@@ -3475,17 +3492,22 @@ class MyApp(QMainWindow):
             return
 
         method_name, reducer = selected_method
-        reducer.fit(X_train_numeric.values, y_train)
-        X_train_embedded = reducer.transform(X_train_numeric.values)
-        X_test_embedded = reducer.transform(X_test_numeric.values)
+        if reducer is not None:
+            reducer.fit(X_train_numeric.values, y_train)
+            X_train_embedded = reducer.transform(X_train_numeric.values)
+            X_test_embedded = reducer.transform(X_test_numeric.values)
+        else:
+            X_train_embedded = X_train_numeric.values
+            X_test_embedded = X_test_numeric.values
 
         knn.fit(X_train_embedded, y_train)
         accuracy = knn.score(X_test_embedded, y_test)
-        self.plotResults(method_name,
-                         X_train_embedded, y_train,
-                         X_test_embedded, y_test,
-                         n_neighbors,
-                         score_value=accuracy, score_label="Test accuracy")
+        if hasattr(X_train_embedded, "shape") and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+            self.plotResults(method_name,
+                             X_train_embedded, y_train,
+                             X_test_embedded, y_test,
+                             n_neighbors,
+                             score_value=accuracy, score_label="Test accuracy")
 
         y_pred_test = knn.predict(X_test_embedded)
         cm = confusion_matrix(y_test, y_pred_test)
@@ -3538,9 +3560,13 @@ class MyApp(QMainWindow):
             return
 
         method_name, reducer = selected_method
-        reducer.fit(X_train_numeric.values, y_train)
-        X_train_embedded = reducer.transform(X_train_numeric.values)
-        X_test_embedded = reducer.transform(X_test_numeric.values)
+        if reducer is not None:
+            reducer.fit(X_train_numeric.values, y_train)
+            X_train_embedded = reducer.transform(X_train_numeric.values)
+            X_test_embedded = reducer.transform(X_test_numeric.values)
+        else:
+            X_train_embedded = X_train_numeric.values
+            X_test_embedded = X_test_numeric.values
 
         knn.fit(X_train_embedded, y_train)
 
@@ -3549,11 +3575,12 @@ class MyApp(QMainWindow):
         y_pred_test = knn.predict(X_test_embedded)
         r2_train = r2_score(y_train, y_pred_train)
         r2_test = r2_score(y_test, y_pred_test)
-        self.plotResults(method_name,
-                         X_train_embedded, y_train,
-                         X_test_embedded, y_test,
-                         n_neighbors,
-                         score_value=r2_test, score_label="Test R2")
+        if hasattr(X_train_embedded, "shape") and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+            self.plotResults(method_name,
+                             X_train_embedded, y_train,
+                             X_test_embedded, y_test,
+                             n_neighbors,
+                             score_value=r2_test, score_label="Test R2")
 
         self.plotObservedVsPredicted(
             y_train, y_pred_train,
@@ -3689,6 +3716,8 @@ class MyApp(QMainWindow):
             return "LDA", LDA(n_components=2)
         elif hasattr(self, "ncaCheckBox") and self.ncaCheckBox.isChecked():
             return "NCA", NCA(n_components=2, max_iter=100, tol=1e-5, random_state=42)
+        elif hasattr(self, "noneCheckBox") and self.noneCheckBox.isChecked():
+            return "None", None
         return None
 
     def showConfusionMatrix(self, cm_df):
@@ -6120,13 +6149,18 @@ def _v379_createClassificationModel(self):
         QMessageBox.warning(self, "Selection Error", "Please select a dimensionality reduction method.")
         return
     method_name, reducer = selected_method
-    reducer.fit(X_train_numeric.values, y_train)
-    X_train_embedded = reducer.transform(X_train_numeric.values)
-    X_test_embedded = reducer.transform(X_test_numeric.values)
+    if reducer is not None:
+        reducer.fit(X_train_numeric.values, y_train)
+        X_train_embedded = reducer.transform(X_train_numeric.values)
+        X_test_embedded = reducer.transform(X_test_numeric.values)
+    else:
+        X_train_embedded = X_train_numeric.values
+        X_test_embedded = X_test_numeric.values
     knn.fit(X_train_embedded, y_train)
     accuracy = knn.score(X_test_embedded, y_test)
-    self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors,
-                     score_value=accuracy, score_label="Test accuracy")
+    if hasattr(X_train_embedded, "shape") and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+        self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors,
+                         score_value=accuracy, score_label="Test accuracy")
     y_pred_train = knn.predict(X_train_embedded)
     y_pred_test = knn.predict(X_test_embedded)
     try:
@@ -7994,3 +8028,257 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     ex = MyApp()
     sys.exit(app.exec_())
+
+
+# ===== v5 base cleanup patch: preserve v5 loader, allow None for KNN/SVM, remove permutation-based active handlers =====
+from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
+
+def _v5clean_to_numeric_df(X):
+    if isinstance(X, pd.DataFrame):
+        X_df = X.copy()
+    else:
+        X_df = pd.DataFrame(X)
+    for col in X_df.columns:
+        if X_df[col].dtype == object:
+            X_df[col] = pd.to_numeric(X_df[col].astype(str).str.replace(',', '', regex=False), errors='coerce')
+    return X_df.fillna(0)
+
+
+def _v5clean_mutual_info(X, y, task='classification'):
+    X_df = _v5clean_to_numeric_df(X)
+    y_arr = np.asarray(y)
+    if task == 'classification':
+        vals = mutual_info_classif(X_df, y_arr, random_state=42)
+    else:
+        vals = mutual_info_regression(X_df, y_arr, random_state=42)
+    return np.asarray(vals, dtype=float)
+
+
+def _v5clean_show_importance_dialog(self, title, feature_names, values, metric_name, intro_html):
+    vals = np.asarray(values, dtype=float)
+    names = list(feature_names) if feature_names else [f'Feature {i+1}' for i in range(len(vals))]
+    n = min(len(vals), len(names))
+    order = np.argsort(np.nan_to_num(vals[:n], nan=-np.inf))[::-1]
+
+    dialog = QDialog(self)
+    dialog.setWindowTitle(title)
+    dialog.resize(800, 600)
+    layout = QVBoxLayout(dialog)
+
+    info = QLabel(intro_html)
+    info.setWordWrap(True)
+    layout.addWidget(info)
+
+    table = QTableWidget(dialog)
+    table.setColumnCount(2)
+    table.setHorizontalHeaderLabels(['Feature', metric_name])
+    table.setRowCount(n)
+    for row, idx in enumerate(order):
+        table.setItem(row, 0, QTableWidgetItem(str(names[idx])))
+        table.setItem(row, 1, QTableWidgetItem(f'{float(vals[idx]):.6f}'))
+    table.resizeColumnsToContents()
+    try:
+        _kuquickml_enable_copyable_table(table)
+    except Exception:
+        pass
+    layout.addWidget(table)
+
+    dialog.setLayout(layout)
+    dialog.setWindowModality(Qt.NonModal)
+    dialog.show()
+
+
+def _v5clean_show_knn_importance(self, reducer, X_eval, y_eval, model, feature_names, title_prefix='KNN', task='classification'):
+    try:
+        vals = _v5clean_mutual_info(X_eval, y_eval, task=task)
+        intro = (
+            f'<b>{title_prefix}</b><br>'
+            '이 화면의 중요도는 <b>mutual information</b>으로 계산됩니다.<br>'
+            '각 feature가 target과 얼마나 관련되어 있는지를 나타내는 값입니다.<br>'
+            '값이 클수록 해당 feature가 더 많은 정보를 담고 있다고 해석할 수 있습니다.<br>'
+            '고정된 절대 기준값보다는 같은 데이터 내 다른 feature와의 상대적 크기와 순위로 해석하는 것이 적절합니다.'
+        )
+        _v5clean_show_importance_dialog(self, 'Feature Importances', feature_names, vals, 'mutual information', intro)
+    except Exception as e:
+        QMessageBox.warning(self, 'Feature Importance Error', f'Failed to compute feature importance:\n{e}')
+
+
+def _v5clean_show_svm_importance(self, kernel, reducer, X_test, y_test, model, feature_names, title_prefix='SVM', task='classification'):
+    try:
+        vals = _v5clean_mutual_info(X_test, y_test, task=task)
+        intro = (
+            f'<b>{title_prefix}</b><br>'
+            '이 화면의 중요도는 <b>mutual information</b>으로 계산됩니다.<br>'
+            '각 feature가 target과 얼마나 관련되어 있는지를 나타내는 값입니다.<br>'
+            '값이 클수록 해당 feature가 더 많은 정보를 담고 있다고 해석할 수 있습니다.<br>'
+            '고정된 절대 기준값보다는 같은 데이터 내 다른 feature와의 상대적 크기와 순위로 해석하는 것이 적절합니다.'
+        )
+        _v5clean_show_importance_dialog(self, 'Feature Importances', feature_names, vals, 'mutual information', intro)
+    except Exception as e:
+        QMessageBox.warning(self, 'Feature Importance Error', f'Failed to compute feature importance:\n{e}')
+
+
+def _v5clean_apply_current_reducer(self):
+    try:
+        if not hasattr(self, 'scaled_unknown_data'):
+            QMessageBox.warning(self, 'Data Error', 'Please scale the unknown data first.')
+            return
+        selected_models = [name for name, checkbox in self.modelCheckBoxes.items() if checkbox.isChecked()]
+        if not selected_models:
+            QMessageBox.warning(self, 'Model Selection Error', 'Please select at least one model.')
+            return
+        model_name = selected_models[0]
+        reducer = self.model_reducers.get(model_name, None)
+        unknown_df = pd.DataFrame(self.scaled_unknown_data, columns=self.unknown_data.columns)
+        if hasattr(self, 'feature_names'):
+            compare_expected = _kuquickml_strip_non_feature_columns(list(self.feature_names))
+            compare_loaded = _kuquickml_strip_non_feature_columns(list(unknown_df.columns))
+            missing = set(compare_expected) - set(compare_loaded)
+            if missing:
+                QMessageBox.warning(self, 'Feature Mismatch', f"The following features are missing in unknown data:\n{', '.join(missing)}")
+                return
+            unknown_df = unknown_df.loc[:, compare_expected]
+        if reducer is None:
+            reduced = unknown_df.values
+            print(f'[Reducer Applied] No dimensionality reduction for {model_name}')
+        else:
+            reduced = reducer.transform(unknown_df)
+            print(f'[Reducer Applied] Using reducer from {model_name}')
+        self.reduced_unknown_data = reduced
+        self.showUnknownData(pd.DataFrame(reduced))
+    except Exception as e:
+        QMessageBox.warning(self, 'Reducer Error', f'Failed to apply reducer:\n{e}')
+
+
+def _v5clean_createClassificationModel(self):
+    if not self.checkDataSplit():
+        return
+    X_train = pd.read_csv(resource_path('Temp/X_train.csv'))
+    X_test = pd.read_csv(resource_path('Temp/X_test.csv'))
+    y_train = pd.read_csv(resource_path('Temp/y_train.csv')).values.ravel()
+    y_test = pd.read_csv(resource_path('Temp/y_test.csv')).values.ravel()
+
+    X_train_numeric = self._drop_sample_and_numeric(X_train).fillna(0)
+    X_test_numeric = self._drop_sample_and_numeric(X_test).fillna(0)
+    feature_names = list(X_train_numeric.columns)
+    n_neighbors = self.n_neighbors_input.value()
+
+    knn = KNeighborsClassifier(n_neighbors=n_neighbors)
+    selected_method = self.getSelectedDimReductionMethod()
+    if not selected_method:
+        QMessageBox.warning(self, 'Selection Error', 'Please select a dimensionality reduction method.')
+        return
+
+    method_name, reducer = selected_method
+    if reducer is not None:
+        reducer.fit(X_train_numeric.values, y_train)
+        X_train_embedded = reducer.transform(X_train_numeric.values)
+        X_test_embedded = reducer.transform(X_test_numeric.values)
+    else:
+        X_train_embedded = X_train_numeric.values
+        X_test_embedded = X_test_numeric.values
+
+    knn.fit(X_train_embedded, y_train)
+    accuracy = knn.score(X_test_embedded, y_test)
+    if hasattr(X_train_embedded, 'shape') and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+        self.plotResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, score_value=accuracy, score_label='Test accuracy')
+
+    y_pred_test = knn.predict(X_test_embedded)
+    cm = confusion_matrix(y_test, y_pred_test)
+    unique_labels = np.unique(np.concatenate((y_test, y_pred_test)))
+    true = [f'true_{label}' for label in unique_labels]
+    pred = [f'pred_{label}' for label in unique_labels]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        precision = np.round(np.diag(cm) / np.sum(cm, axis=0) * 100, 3)
+        precision = np.nan_to_num(precision)
+    cm_df = pd.DataFrame(cm, index=true, columns=pred)
+    cm_df['Prediction Accuracy (%)'] = precision
+    self.showConfusionMatrix(cm_df)
+
+    train_accuracy = knn.score(X_train_embedded, y_train)
+    result_text = (
+        f'Train accuracy: {train_accuracy:.4f}\n'
+        f'Test accuracy: {accuracy:.4f}\n'
+        f'Neighbors: {n_neighbors}\n'
+        f'Dimensionality reduction: {method_name}'
+    )
+    self.resultsLabel.setText(result_text)
+    self.saveModelButton.setVisible(True)
+    self.useCurrentModelButton.setVisible(True)
+    self.current_model = knn
+    self.current_model_type = 'KNN Classification'
+    self.showKNNFeatureImportance(reducer, X_test_numeric, y_test, knn, feature_names, title_prefix='KNN (Classification)', task='classification')
+    self.plotObservedVsPredicted(y_train, knn.predict(X_train_embedded), y_test, y_pred_test, 'KNN Observed vs Predicted')
+    self.models['KNN Classification'] = {'model': knn, 'scaler': self._get_bundle_scaler(), 'reducer': reducer, 'feature_names': feature_names, 'label_mapping': self._get_label_mapping()}
+    if reducer is not None:
+        self.model_reducers['KNN Classification'] = reducer
+    elif 'KNN Classification' in self.model_reducers:
+        del self.model_reducers['KNN Classification']
+
+
+def _v5clean_createRegressionModel(self):
+    if not self.checkDataSplit():
+        return
+    X_train = pd.read_csv(resource_path('Temp/X_train.csv'))
+    X_test = pd.read_csv(resource_path('Temp/X_test.csv'))
+    y_train = pd.read_csv(resource_path('Temp/y_train.csv')).values.ravel()
+    y_test = pd.read_csv(resource_path('Temp/y_test.csv')).values.ravel()
+
+    X_train_numeric = self._drop_sample_and_numeric(X_train).fillna(0)
+    X_test_numeric = self._drop_sample_and_numeric(X_test).fillna(0)
+    feature_names = list(X_train_numeric.columns)
+    n_neighbors = self.n_neighbors_input.value()
+
+    knn = KNeighborsRegressor(n_neighbors=n_neighbors)
+    selected_method = self.getSelectedDimReductionMethod()
+    if not selected_method:
+        QMessageBox.warning(self, 'Selection Error', 'Please select a dimensionality reduction method.')
+        return
+
+    method_name, reducer = selected_method
+    if reducer is not None:
+        reducer.fit(X_train_numeric.values, y_train)
+        X_train_embedded = reducer.transform(X_train_numeric.values)
+        X_test_embedded = reducer.transform(X_test_numeric.values)
+    else:
+        X_train_embedded = X_train_numeric.values
+        X_test_embedded = X_test_numeric.values
+
+    knn.fit(X_train_embedded, y_train)
+    y_pred_train = knn.predict(X_train_embedded)
+    y_pred_test = knn.predict(X_test_embedded)
+    mse = mean_squared_error(y_test, y_pred_test)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test, y_pred_test)
+    mae = mean_absolute_error(y_test, y_pred_test)
+    if hasattr(X_train_embedded, 'shape') and len(X_train_embedded.shape) == 2 and X_train_embedded.shape[1] == 2:
+        self.plotRegressionResults(method_name, X_train_embedded, y_train, X_test_embedded, y_test, n_neighbors, score_value=r2, score_label='Test R²')
+    result_text = (
+        f'Test MSE: {mse:.4f}\nTest RMSE: {rmse:.4f}\nTest MAE: {mae:.4f}\nTest R²: {r2:.4f}\nNeighbors: {n_neighbors}\nDimensionality reduction: {method_name}'
+    )
+    self.resultsLabel.setText(result_text)
+    self.saveModelButton.setVisible(True)
+    self.useCurrentModelButton.setVisible(True)
+    self.current_model = knn
+    self.current_model_type = 'KNN Regression'
+    self.showKNNFeatureImportance(reducer, X_test_numeric, y_test, knn, feature_names, title_prefix='KNN (Regression)', task='regression')
+    self.plotObservedVsPredicted(y_train, y_pred_train, y_test, y_pred_test, 'KNN Regression Observed vs Predicted')
+    self.models['KNN Regression'] = {'model': knn, 'scaler': self._get_bundle_scaler(), 'reducer': reducer, 'feature_names': feature_names, 'label_mapping': None}
+    if reducer is not None:
+        self.model_reducers['KNN Regression'] = reducer
+    elif 'KNN Regression' in self.model_reducers:
+        del self.model_reducers['KNN Regression']
+
+
+MyApp.showKNNFeatureImportance = _v5clean_show_knn_importance
+MyApp.showKNNPermutationImportance = _v5clean_show_knn_importance
+MyApp.showSVMImportanceUnavailable = _v5clean_show_svm_importance
+MyApp.applyCurrentReducer = _v5clean_apply_current_reducer
+MyApp.createClassificationModel = _v5clean_createClassificationModel
+MyApp.createRegressionModel = _v5clean_createRegressionModel
+
+def _v5clean_no_permutation(*args, **kwargs):
+    raise RuntimeError('Permutation importance is disabled in this version.')
+
+_kuquickml_permutation = _v5clean_no_permutation
+# ===== end v5 base cleanup patch =====
