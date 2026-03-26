@@ -5,7 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'kuquickmlv4.0.py'
+      - 'kuquickmlv8.0.py'
       - 'dialogs/**'
       - 'icon.png'
       - 'icon.ico'
@@ -23,22 +23,22 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            entry: kuquickmlv4.0.py
+            entry: kuquickmlv8.0.py
             artifact_name: KUQuickML-KR-Windows
             data_sep: ';'
 
           - os: macos-15-intel
-            entry: kuquickmlv4.0.py
+            entry: kuquickmlv8.0.py
             artifact_name: KUQuickML-KR-macOS-Intel
             data_sep: ':'
 
           - os: macos-latest
-            entry: kuquickmlv4.0.py
+            entry: kuquickmlv8.0.py
             artifact_name: KUQuickML-KR-macOS-AppleSilicon
             data_sep: ':'
 
           - os: ubuntu-latest
-            entry: kuquickmlv4.0.py
+            entry: kuquickmlv8.0.py
             artifact_name: KUQuickML-KR-Linux
             data_sep: ':'
 
