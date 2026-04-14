@@ -156,7 +156,7 @@ jobs:
           ls -la dist/KUQuickML/_internal/sklearn/.libs || true
           test -d dist/KUQuickML/_internal/sklearn/.libs
 
-       - name: Upload artifact on macOS
+      - name: Upload artifact on macOS
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
