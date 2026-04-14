@@ -68,7 +68,7 @@ jobs:
         run: |
           python -c "import optuna; print('optuna', optuna.__version__)"
 
-           - name: Build with PyInstaller
+      - name: Build with PyInstaller
         shell: bash
         run: |
           ICON_ARG=""
