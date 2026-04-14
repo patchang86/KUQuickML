@@ -72,16 +72,22 @@ jobs:
         shell: bash
         run: |
           ICON_ARG=""
+          MODE_ARG="--onedir"
+
           if [ "${{ runner.os }}" = "Windows" ]; then
             ICON_ARG="--icon icon.ico"
+            MODE_ARG="--onedir"
           elif [ "${{ runner.os }}" = "macOS" ]; then
             ICON_ARG="--icon icon.icns"
+            MODE_ARG="--onefile"
+          elif [ "${{ runner.os }}" = "Linux" ]; then
+            MODE_ARG="--onedir"
           fi
 
           pyinstaller \
             --noconfirm \
             --clean \
-            --onedir \
+            $MODE_ARG \
             --windowed \
             --name KUQuickML \
             $ICON_ARG \
@@ -145,8 +151,22 @@ jobs:
           ls -la dist/KUQuickML/_internal/sklearn || true
           ls -la dist/KUQuickML/_internal/sklearn/.libs || true
           test -d dist/KUQuickML/_internal/sklearn/.libs
+      - name: Remove quarantine attributes on macOS build
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          xattr -cr dist/KUQuickML.app || true
+      - name: Upload artifact on macOS
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/KUQuickML.app/**
+          if-no-files-found: error
+          include-hidden-files: true
 
-      - name: Upload artifact
+      - name: Upload artifact on non-macOS
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
