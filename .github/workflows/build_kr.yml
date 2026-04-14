@@ -68,20 +68,26 @@ jobs:
         run: |
           python -c "import optuna; print('optuna', optuna.__version__)"
 
-      - name: Build with PyInstaller
+           - name: Build with PyInstaller
         shell: bash
         run: |
           ICON_ARG=""
+          MODE_ARG="--onedir"
+
           if [ "${{ runner.os }}" = "Windows" ]; then
             ICON_ARG="--icon icon.ico"
+            MODE_ARG="--onedir"
           elif [ "${{ runner.os }}" = "macOS" ]; then
             ICON_ARG="--icon icon.icns"
+            MODE_ARG="--onefile"
+          elif [ "${{ runner.os }}" = "Linux" ]; then
+            MODE_ARG="--onedir"
           fi
 
           pyinstaller \
             --noconfirm \
             --clean \
-            --onedir \
+            $MODE_ARG \
             --windowed \
             --name KUQuickML \
             $ICON_ARG \
@@ -106,7 +112,11 @@ jobs:
             --recursive-copy-metadata optuna \
             --hidden-import sklearn._distributor_init \
             "${{ matrix.entry }}"
-
+      - name: Remove quarantine attributes on macOS build
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          xattr -cr dist/KUQuickML.app || true
       - name: Copy sklearn .libs on Windows
         if: runner.os == 'Windows'
         shell: bash
@@ -146,7 +156,17 @@ jobs:
           ls -la dist/KUQuickML/_internal/sklearn/.libs || true
           test -d dist/KUQuickML/_internal/sklearn/.libs
 
-      - name: Upload artifact
+       - name: Upload artifact on macOS
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/KUQuickML.app/**
+          if-no-files-found: error
+          include-hidden-files: true
+
+      - name: Upload artifact on non-macOS
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
