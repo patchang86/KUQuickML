@@ -1,11 +1,11 @@
-pyinstaller
-numpy
-pandas
-scikit-learn
-matplotlib
-joblib
-optuna
-PyQt5
-openpyxl
-seaborn
-mplcursors
+# KUQuickML requirements
+# Primary development/testing environment: Windows
+# macOS and Linux support is intended, but testing on those platforms has been limited.
+
+matplotlib==3.9.0
+numpy==1.24.3
+pandas==2.2.2
+PyQt5==5.15.11
+scikit-learn==1.5.1
+joblib==1.4.2
+optuna>=3.0.0
