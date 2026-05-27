@@ -62,10 +62,16 @@ One-hundred plant species leaves dataset
 Arabidopsis thaliana metabolomics dataset
 Platform note
 KUQuickML was developed primarily in a Windows environment. macOS and Linux compatibility is intended, but testing on those platforms has been more limited, and some functions may not operate identically across systems.
-Citation
-If you use KUQuickML in academic work, please cite the associated manuscript and, if available, the Zenodo release DOI.
-Suggested software citation format:
-> Do E, Ku KM. KUQuickML (Version 1.0.0) [Software]. Available from: https://github.com/patchang86/KUQuickML
+## Citation
+
+If you use KUQuickML in academic work, please cite the associated manuscript and the archived software release.
+
+Suggested software citation:
+
 > Do E, Ku K-M. KUQuickML (Version 1.0.0) [Software]. Zenodo. https://doi.org/10.5281/zenodo.20416009
-License
-This project is distributed under the MIT License. See the `LICENSE` file for details.
+>
+> ## License
+
+KUQuickML is distributed under the MIT License. See the `LICENSE` file for details.
+
+The source code repository is also available at: https://github.com/patchang86/KUQuickML
